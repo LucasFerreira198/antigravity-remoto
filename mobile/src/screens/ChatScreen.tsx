@@ -23,6 +23,7 @@ import {
   Copy,
   Check,
   Folder,
+  ArrowDown,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
@@ -42,15 +43,18 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [isSending, setIsSending] = useState(false);
   const [expandedThoughts, setExpandedThoughts] = useState<Record<number, boolean>>({});
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const wsRef = useRef<ConversationWebSocket | null>(null);
 
-  // Carregar histórico inicial
   const loadHistory = async () => {
     try {
       const data = await api.getConversation(conversation.id);
       setMessages(data.messages || []);
       setArtifacts(data.artifacts || []);
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 200);
     } catch (e) {
       console.error('Erro ao carregar mensagens:', e);
     }
@@ -59,9 +63,8 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   useEffect(() => {
     loadHistory();
 
-    // Iniciar WebSocket para streaming ao vivo
-    const ws = new ConversationWebSocket(conversation.id, (step) => {
-      handleLiveStep(step);
+    const ws = new ConversationWebSocket(conversation.id, (payload) => {
+      handleLiveEvent(payload);
     });
     ws.connect();
     wsRef.current = ws;
@@ -71,59 +74,65 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     };
   }, [conversation.id]);
 
-  const handleLiveStep = (step: any) => {
-    const stepType = step.type;
-    const source = step.source;
+  const handleLiveEvent = (payload: any) => {
+    // 1. Histórico inicial recebido pelo socket
+    if (payload.event === 'initial_history' && payload.messages) {
+      setMessages(payload.messages);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 200);
+      return;
+    }
 
-    setMessages((prev) => {
-      const existingIdx = prev.findIndex((m) => m.step_index === step.step_index && m.type === (
-        stepType === 'USER_INPUT' ? 'user_message' :
-        stepType === 'PLANNER_RESPONSE' ? 'planner_response' : 'assistant_message'
-      ));
+    // 2. Stream direto do agy.exe
+    if (payload.event === 'stream_step' && payload.raw) {
+      const raw = payload.raw;
+      const rawEvt = raw.event;
 
-      let newMsg: Message | null = null;
-      if (stepType === 'USER_INPUT') {
-        newMsg = {
-          role: 'user',
-          step_index: step.step_index,
-          created_at: step.created_at || new Date().toISOString(),
-          content: step.content || '',
-          type: 'user_message',
-        };
-      } else if (stepType === 'PLANNER_RESPONSE') {
-        newMsg = {
-          role: 'assistant',
-          step_index: step.step_index,
-          created_at: step.created_at || new Date().toISOString(),
-          thinking: step.thinking || '',
-          tool_calls: step.tool_calls || [],
-          type: 'planner_response',
-        };
-      } else if (stepType === 'GENERIC' && source === 'MODEL') {
-        newMsg = {
-          role: 'assistant',
-          step_index: step.step_index,
-          created_at: step.created_at || new Date().toISOString(),
-          content: step.content || '',
-          type: 'assistant_message',
-        };
+      if (rawEvt === 'step_update' && raw.step_update) {
+        const update = raw.step_update;
+        const stepType = update.step_type;
+
+        if (stepType === 'agent_response' && update.text_delta) {
+          setIsSending(false);
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === 'assistant' && last.type === 'assistant_message') {
+              const updated = { ...last, content: (last.content || '') + update.text_delta };
+              return [...prev.slice(0, -1), updated];
+            } else {
+              const newMsg: Message = {
+                role: 'assistant',
+                step_index: update.step_index || prev.length,
+                created_at: new Date().toISOString(),
+                content: update.text_delta,
+                type: 'assistant_message',
+              };
+              return [...prev, newMsg];
+            }
+          });
+        } else if (stepType === 'tool') {
+          // Tool em execução
+          setMessages((prev) => {
+            const toolCall = {
+              name: update.tool_name || update.tool_info?.name || 'Comando',
+              args: update.tool_info?.parameters || {},
+              status: update.state,
+            };
+            const newPlanner: Message = {
+              role: 'assistant',
+              step_index: update.step_index || prev.length,
+              created_at: new Date().toISOString(),
+              tool_calls: [toolCall],
+              type: 'planner_response',
+            };
+            return [...prev, newPlanner];
+          });
+        }
+      } else if (rawEvt === 'result') {
+        setIsSending(false);
+        // Recarregar histórico estruturado final para garantir consistência
+        loadHistory();
       }
-
-      if (!newMsg) return prev;
-
-      if (existingIdx !== -1) {
-        const copy = [...prev];
-        copy[existingIdx] = newMsg;
-        return copy;
-      } else {
-        return [...prev, newMsg];
-      }
-    });
-
-    // Auto-scroll
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 150);
+    }
   };
 
   const handleSend = async (overrideText?: string) => {
@@ -134,7 +143,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     setInputPrompt('');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Otimista: Adicionar mensagem do usuário localmente
+    // Adicionar mensagem otimista limpa do usuário
     const tempIndex = messages.length ? Math.max(...messages.map((m) => m.step_index)) + 1 : 1;
     const optimisticMsg: Message = {
       role: 'user',
@@ -145,11 +154,14 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     };
     setMessages((prev) => [...prev, optimisticMsg]);
 
+    setTimeout(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+
     try {
       await api.sendMessage(conversation.id, textToSend);
     } catch (e: any) {
       Alert.alert('Erro ao enviar mensagem', e.message || 'Falha na comunicação com o Antigravity.');
-    } finally {
       setIsSending(false);
     }
   };
@@ -166,9 +178,15 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     setTimeout(() => setCopiedIndex(null), 2000);
   };
 
+  const scrollToBottom = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    flatListRef.current?.scrollToEnd({ animated: true });
+  };
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       style={styles.container}
     >
       {/* Cabeçalho */}
@@ -205,9 +223,24 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       {/* Lista de Mensagens */}
       <FlatList
         ref={flatListRef}
+        style={{ flex: 1 }}
         data={messages}
         keyExtractor={(item, index) => `${item.step_index}-${item.type}-${index}`}
-        contentContainerStyle={styles.messagesList}
+        contentContainerStyle={[styles.messagesList, { paddingBottom: 140 }]}
+        onContentSizeChange={() => {
+          if (!showScrollBottom) {
+            flatListRef.current?.scrollToEnd({ animated: true });
+          }
+        }}
+        onLayout={() => {
+          flatListRef.current?.scrollToEnd({ animated: false });
+        }}
+        onScroll={(e) => {
+          const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+          const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 120;
+          setShowScrollBottom(!isCloseToBottom);
+        }}
+        scrollEventThrottle={100}
         renderItem={({ item, index }) => {
           if (item.type === 'user_message') {
             return (
@@ -252,9 +285,9 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                       <View key={tIdx} style={styles.toolChip}>
                         <Terminal size={12} color="#34d399" style={{ marginRight: 6 }} />
                         <Text style={styles.toolName}>{tool.name}</Text>
-                        {tool.args?.toolSummary ? (
+                        {tool.args?.CommandLine || tool.args?.toolSummary ? (
                           <Text style={styles.toolSummary} numberOfLines={1}>
-                            • {tool.args.toolSummary.replace(/^"|"$/g, '')}
+                            • {(tool.args.CommandLine || tool.args.toolSummary).replace(/^"|"$/g, '')}
                           </Text>
                         ) : null}
                       </View>
@@ -265,7 +298,6 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             );
           }
 
-          // Mensagem de resposta do assistente
           return (
             <View style={styles.assistantBubble}>
               <View style={styles.assistantHeader}>
@@ -289,6 +321,13 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           );
         }}
       />
+
+      {/* Botão Flutuante para Descer até o final se rolou para cima */}
+      {showScrollBottom && (
+        <TouchableOpacity style={styles.scrollBottomBtn} onPress={scrollToBottom}>
+          <ArrowDown size={18} color="#ffffff" />
+        </TouchableOpacity>
+      )}
 
       {/* Barra de Ações Rápidas (Slash Commands) */}
       <View style={styles.slashCommandsBar}>
@@ -396,7 +435,6 @@ const styles = StyleSheet.create({
   },
   messagesList: {
     padding: 16,
-    paddingBottom: 20,
   },
   userBubble: {
     alignSelf: 'flex-end',
@@ -505,6 +543,22 @@ const styles = StyleSheet.create({
     color: '#f8fafc',
     fontSize: 14,
     lineHeight: 22,
+  },
+  scrollBottomBtn: {
+    position: 'absolute',
+    bottom: 120,
+    right: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#0284c7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
   },
   slashCommandsBar: {
     flexDirection: 'row',

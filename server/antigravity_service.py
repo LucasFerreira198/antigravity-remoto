@@ -1,11 +1,13 @@
 import os
+import re
 import json
 import sqlite3
 import subprocess
 import uuid
 import datetime
+import threading
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 
 from .config import AppPaths
 
@@ -20,6 +22,29 @@ class AntigravityService:
         conn = sqlite3.connect(f"file:{self.paths.CONVERSATION_SUMMARIES_DB}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def clean_message_content(self, text: str) -> str:
+        """Limpa metadados internos, tags XML e notificações de sistema para exibir apenas o texto limpo."""
+        if not text:
+            return ""
+        
+        # Ignorar mensagens de sistema que não foram enviadas pelo usuário
+        if "The following is a <SYSTEM_MESSAGE>" in text:
+            return ""
+        
+        # 1. Extrair conteúdo principal de <USER_REQUEST> se existir
+        match = re.search(r'<USER_REQUEST>(.*?)</USER_REQUEST>', text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+
+        # 2. Remover bloco de metadados
+        text = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', text, flags=re.DOTALL)
+        # 3. Remover tags de slash commands / contexto interno
+        text = re.sub(r'<[A-Z_]+(\[[^\]]+\])?>.*?</[A-Z_]+>', '', text, flags=re.DOTALL)
+        # 4. Remover tags residuais
+        text = re.sub(r'</?[A-Za-z0-9_-]+(\s+[^>]*)?>', '', text)
+
+        return text.strip()
 
     def list_conversations(self, limit: int = 50, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retorna lista de conversas com metadados do SQLite."""
@@ -46,16 +71,20 @@ class AntigravityService:
             cursor.execute(query, params)
             rows = cursor.fetchall()
             
-            # Mapear projetos para obter nomes amigáveis
             projects = {p["id"]: p["name"] for p in self.list_projects()}
 
             results = []
             for row in rows:
                 p_id = row["project_id"]
+                preview = self.clean_message_content(row["preview"] or "")
+                title = row["title"] or "Conversa sem título"
+                # Limpar título se contiver tags
+                title = self.clean_message_content(title) or title
+
                 results.append({
                     "id": row["conversation_id"],
-                    "title": row["title"] or "Conversa sem título",
-                    "preview": row["preview"] or "",
+                    "title": title,
+                    "preview": preview,
                     "step_count": row["step_count"],
                     "last_modified_time": row["last_modified_time"],
                     "workspace_uris": json.loads(row["workspace_uris"]) if row["workspace_uris"] else [],
@@ -72,7 +101,7 @@ class AntigravityService:
             conn.close()
 
     def get_conversation_transcript(self, conversation_id: str) -> Dict[str, Any]:
-        """Lê os passos da conversa a partir do arquivo transcript.jsonl / transcript_full.jsonl."""
+        """Lê os passos da conversa a partir do arquivo transcript.jsonl / transcript_full.jsonl de forma limpa."""
         brain_dir = self.paths.BRAIN_DIR / conversation_id
         logs_dir = brain_dir / ".system_generated" / "logs"
         transcript_file = logs_dir / "transcript_full.jsonl"
@@ -92,38 +121,45 @@ class AntigravityService:
                             step_type = step.get("type")
                             source = step.get("source")
                             
-                            # Normalizar em formato de mensagem para o chat mobile
                             if step_type == "USER_INPUT":
-                                messages.append({
-                                    "role": "user",
-                                    "step_index": step.get("step_index", 0),
-                                    "created_at": step.get("created_at"),
-                                    "content": step.get("content", ""),
-                                    "type": "user_message"
-                                })
+                                raw_content = step.get("content", "")
+                                clean_text = self.clean_message_content(raw_content)
+                                if clean_text:
+                                    messages.append({
+                                        "role": "user",
+                                        "step_index": step.get("step_index", 0),
+                                        "created_at": step.get("created_at"),
+                                        "content": clean_text,
+                                        "type": "user_message"
+                                    })
                             elif step_type == "PLANNER_RESPONSE":
-                                messages.append({
-                                    "role": "assistant",
-                                    "step_index": step.get("step_index", 0),
-                                    "created_at": step.get("created_at"),
-                                    "thinking": step.get("thinking", ""),
-                                    "tool_calls": step.get("tool_calls", []),
-                                    "type": "planner_response"
-                                })
+                                thinking = step.get("thinking", "")
+                                tool_calls = step.get("tool_calls", [])
+                                if thinking or tool_calls:
+                                    messages.append({
+                                        "role": "assistant",
+                                        "step_index": step.get("step_index", 0),
+                                        "created_at": step.get("created_at"),
+                                        "thinking": thinking,
+                                        "tool_calls": tool_calls,
+                                        "type": "planner_response"
+                                    })
                             elif step_type == "GENERIC" and source == "MODEL":
-                                messages.append({
-                                    "role": "assistant",
-                                    "step_index": step.get("step_index", 0),
-                                    "created_at": step.get("created_at"),
-                                    "content": step.get("content", ""),
-                                    "type": "assistant_message"
-                                })
+                                content = step.get("content", "")
+                                # Não adicionar se for mensagem vazia ou de controle
+                                if content and not content.startswith("The following is a <SYSTEM_MESSAGE>"):
+                                    messages.append({
+                                        "role": "assistant",
+                                        "step_index": step.get("step_index", 0),
+                                        "created_at": step.get("created_at"),
+                                        "content": content,
+                                        "type": "assistant_message"
+                                    })
                         except json.JSONDecodeError:
                             continue
             except Exception as e:
                 print(f"Erro ao ler transcrição: {e}")
 
-        # Buscar artefatos disponíveis nesta conversa
         artifacts = self.list_artifacts(conversation_id)
 
         return {
@@ -133,7 +169,7 @@ class AntigravityService:
         }
 
     def list_artifacts(self, conversation_id: str) -> List[Dict[str, Any]]:
-        """Lista os arquivos e artefatos criados dentro da pasta brain da conversa."""
+        """Lista os artefatos gerados na pasta brain da conversa."""
         brain_dir = self.paths.BRAIN_DIR / conversation_id
         if not brain_dir.exists():
             return []
@@ -166,10 +202,9 @@ class AntigravityService:
         return artifacts
 
     def get_artifact_content(self, conversation_id: str, filename: str) -> Optional[Dict[str, Any]]:
-        """Lê o conteúdo de um arquivo ou artefato."""
+        """Lê o conteúdo de um arquivo ou artefato com proteção path traversal."""
         brain_dir = self.paths.BRAIN_DIR / conversation_id
         target = (brain_dir / filename).resolve()
-        # Prevenção contra Directory Traversal
         if not str(target).startswith(str(brain_dir.resolve())) or not target.exists():
             return None
         
@@ -190,59 +225,56 @@ class AntigravityService:
                     "content": f.read()
                 }
 
-    def send_message(self, conversation_id: str, prompt: str, title: Optional[str] = None) -> Dict[str, Any]:
-        """Envia mensagem para continuar uma conversa via agentapi.bat."""
-        cmd = [str(self.paths.AGENTAPI_BAT), "send-message"]
-        if title:
-            cmd.extend([f"--title={title}"])
-        cmd.extend([conversation_id, prompt])
-        
-        # Executar em processo desacoplado para não travar a requisição HTTP
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            shell=True
-        )
-        return {
-            "status": "sent",
-            "conversation_id": conversation_id,
-            "pid": process.pid
-        }
+    def execute_turn_stream(
+        self,
+        conversation_id: Optional[str],
+        prompt: str,
+        on_line: Callable[[str], None],
+        model: Optional[str] = None,
+        project_id: Optional[str] = None
+    ):
+        """Executa um turno completo no Antigravity CLI (agy.exe) transmitindo a saída em tempo real."""
+        cmd = [
+            str(self.paths.AGY_EXE),
+            "-p", prompt,
+            "--mode", "auto",
+            "--dangerously-skip-permissions",
+            "--output-format", "stream-json"
+        ]
 
-    def new_conversation(self, prompt: str, model: Optional[str] = None, title: Optional[str] = None, project_id: Optional[str] = None) -> Dict[str, Any]:
-        """Cria uma nova conversa via agentapi.bat."""
-        cmd = [str(self.paths.AGENTAPI_BAT), "new-conversation"]
+        if conversation_id:
+            cmd.extend(["--conversation", conversation_id])
         if model:
-            cmd.append(f"--model={model}")
-        if title:
-            cmd.append(f"--title={title}")
-        cmd.append(prompt)
+            cmd.extend(["--model", model])
+        if project_id:
+            cmd.extend(["--project", project_id])
 
+        # Definir diretório de trabalho adequado
         cwd = None
         if project_id:
-            # Se fornecido project_id, usar o diretório de trabalho do projeto
-            projects = self.list_projects()
-            for p in projects:
+            for p in self.list_projects():
                 if p["id"] == project_id and p.get("folder_path"):
                     cwd = p["folder_path"]
                     break
 
+        print(f"[AGY] Executando turno: {' '.join(cmd[:4])} ...")
         process = subprocess.Popen(
             cmd,
             cwd=cwd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            shell=True
+            bufsize=1,
+            encoding="utf-8",
+            errors="replace"
         )
-        return {
-            "status": "initiated",
-            "pid": process.pid,
-            "model": model or "default",
-            "title": title
-        }
+
+        for line in process.stdout:
+            line_str = line.strip()
+            if line_str:
+                on_line(line_str)
+
+        process.wait()
 
     def list_projects(self) -> List[Dict[str, Any]]:
         """Lê os projetos configurados em ~/.gemini/config/projects/."""
@@ -258,7 +290,6 @@ class AntigravityService:
                     resources = data.get("projectResources", {}).get("resources", [])
                     if resources and "folderUri" in resources[0]:
                         uri = resources[0]["folderUri"]
-                        # Decodificar file:///c%3A/Users/... para caminho Windows
                         import urllib.parse
                         decoded = urllib.parse.unquote(uri)
                         if decoded.startswith("file:///"):
@@ -275,12 +306,11 @@ class AntigravityService:
         return projects
 
     def create_project(self, name: str, folder_path: str) -> Dict[str, Any]:
-        """Cria um novo projeto e sua pasta se necessário."""
+        """Cria novo projeto e pasta."""
         path_obj = Path(folder_path)
         path_obj.mkdir(parents=True, exist_ok=True)
         
         project_id = str(uuid.uuid4())
-        # Codificar formato folderUri
         import urllib.parse
         clean_path = str(path_obj.resolve()).replace("\\", "/")
         if not clean_path.startswith("/"):
@@ -326,7 +356,7 @@ class AntigravityService:
             return {}
 
     def update_settings(self, updates: Dict[str, Any]) -> Dict[str, Any]:
-        """Atualiza campos de configuração em config.json mantendo integridade."""
+        """Atualiza campos em config.json."""
         if not self.paths.GLOBAL_CONFIG_FILE.exists():
             return {}
         
