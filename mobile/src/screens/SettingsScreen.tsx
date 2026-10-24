@@ -19,11 +19,13 @@ import {
   Check,
   LogOut,
   Moon,
+  DownloadCloud,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
 import { StorageService } from '../services/storage';
 import { AntigravitySettings } from '../types';
+import UpdateModal, { CURRENT_VERSION } from '../components/UpdateModal';
 
 interface SettingsScreenProps {
   onBack: () => void;
@@ -34,6 +36,7 @@ export default function SettingsScreen({ onBack, onDisconnect }: SettingsScreenP
   const [settings, setSettings] = useState<AntigravitySettings>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [updateModalVisible, setUpdateModalVisible] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -229,12 +232,43 @@ export default function SettingsScreen({ onBack, onDisconnect }: SettingsScreenP
           })}
         </View>
 
+        {/* Atualização do App */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <DownloadCloud size={16} color="#38bdf8" style={{ marginRight: 8 }} />
+            <Text style={styles.sectionTitle}>ATUALIZAÇÃO DO APLICATIVO</Text>
+          </View>
+          <View style={styles.updateRow}>
+            <View>
+              <Text style={styles.updateVersionTitle}>Versão Instalada</Text>
+              <Text style={styles.updateVersionSubtitle}>v{CURRENT_VERSION}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.updateCheckBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                setUpdateModalVisible(true);
+              }}
+            >
+              <DownloadCloud size={16} color="#ffffff" style={{ marginRight: 6 }} />
+              <Text style={styles.updateCheckBtnText}>Verificar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {/* Desconectar */}
         <TouchableOpacity style={styles.disconnectBtn} onPress={handleDisconnect}>
           <LogOut size={18} color="#ef4444" style={{ marginRight: 8 }} />
           <Text style={styles.disconnectBtnText}>Desconectar deste Computador</Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Modal de Atualização Automática */}
+      <UpdateModal
+        visible={updateModalVisible}
+        onClose={() => setUpdateModalVisible(false)}
+        manualTrigger={true}
+      />
     </View>
   );
 }
@@ -347,6 +381,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
     lineHeight: 16,
+  },
+  updateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  updateVersionTitle: {
+    color: '#f8fafc',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  updateVersionSubtitle: {
+    color: '#38bdf8',
+    fontSize: 12,
+    marginTop: 2,
+    fontWeight: '700',
+  },
+  updateCheckBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  updateCheckBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
   },
   disconnectBtn: {
     flexDirection: 'row',

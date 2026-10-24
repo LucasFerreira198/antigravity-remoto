@@ -15,6 +15,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import NewConversationModal from './src/screens/NewConversationModal';
 import ArtifactViewerModal from './src/screens/ArtifactViewerModal';
 import Header from './src/components/Header';
+import UpdateModal from './src/components/UpdateModal';
 
 type Screen = 'conversations' | 'chat' | 'projects' | 'settings';
 
@@ -27,11 +28,57 @@ export default function App() {
     visible: false,
     conversationId: '',
   });
+  const [updateModalVisible, setUpdateModalVisible] = useState(false);
 
-  // Verificar credenciais salvas no início
+  // Verificar credenciais salvas no início e checar updates
   useEffect(() => {
     checkInitialConnection();
+
+    // Verificação não-bloqueante de atualizações 2s após inicializar
+    const timer = setTimeout(() => {
+      checkAppUpdateSilently();
+    }, 2000);
+    return () => clearTimeout(timer);
   }, []);
+
+  const checkAppUpdateSilently = async () => {
+    try {
+      const res = await fetch('https://api.github.com/repos/LucasFerreira198/antigravity-remoto/releases/latest', {
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'AntigravityRemote-App',
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const tagName = data.tag_name || '';
+        const releaseName = data.name || '';
+        const match = (releaseName + ' ' + tagName).match(/v?(\d+\.\d+\.\d+)/i);
+        const remoteVer = match ? match[1] : '';
+        const currentVer = require('./app.json').expo.version || '1.0.2';
+        
+        // Se remoto for maior que atual, abrir modal de atualização
+        if (remoteVer && isNewer(remoteVer, currentVer)) {
+          setUpdateModalVisible(true);
+        }
+      }
+    } catch (e) {
+      // Ignorar erros em checagem silenciosa
+    }
+  };
+
+  const isNewer = (remote: string, current: string): boolean => {
+    const rParts = remote.replace(/^v/i, '').split('.').map((p) => parseInt(p, 10) || 0);
+    const cParts = current.replace(/^v/i, '').split('.').map((p) => parseInt(p, 10) || 0);
+    const maxLen = Math.max(rParts.length, cParts.length);
+    for (let i = 0; i < maxLen; i++) {
+      const r = rParts[i] || 0;
+      const c = cParts[i] || 0;
+      if (r > c) return true;
+      if (r < c) return false;
+    }
+    return false;
+  };
 
   const checkInitialConnection = async () => {
     const saved = await StorageService.getConnection();
@@ -133,6 +180,13 @@ export default function App() {
               visible={artifactModalData.visible}
               conversationId={artifactModalData.conversationId}
               onClose={() => setArtifactModalData({ visible: false, conversationId: '' })}
+            />
+
+            {/* Modal de Atualização Automática do App */}
+            <UpdateModal
+              visible={updateModalVisible}
+              onClose={() => setUpdateModalVisible(false)}
+              manualTrigger={false}
             />
           </View>
         )}

@@ -133,28 +133,42 @@ class AntigravityService:
                                         "type": "user_message"
                                     })
                             elif step_type == "PLANNER_RESPONSE":
+                                content = step.get("content", "")
                                 thinking = step.get("thinking", "")
                                 tool_calls = step.get("tool_calls", [])
-                                if thinking or tool_calls:
+                                
+                                # Se o modelo gerou resposta visível para o usuário
+                                if content and content.strip():
                                     messages.append({
                                         "role": "assistant",
                                         "step_index": step.get("step_index", 0),
                                         "created_at": step.get("created_at"),
-                                        "thinking": thinking,
-                                        "tool_calls": tool_calls,
-                                        "type": "planner_response"
-                                    })
-                            elif step_type == "GENERIC" and source == "MODEL":
-                                content = step.get("content", "")
-                                # Não adicionar se for mensagem vazia ou de controle
-                                if content and not content.startswith("The following is a <SYSTEM_MESSAGE>"):
-                                    messages.append({
-                                        "role": "assistant",
-                                        "step_index": step.get("step_index", 0),
-                                        "created_at": step.get("created_at"),
-                                        "content": content,
+                                        "content": content.strip(),
                                         "type": "assistant_message"
                                     })
+                                # Se foi apenas raciocínio interno ou execução de comandos
+                                elif thinking or tool_calls:
+                                    safe_tools = []
+                                    for tc in tool_calls:
+                                        args = tc.get("args", {})
+                                        summary = args.get("toolSummary") or args.get("CommandLine") or tc.get("name")
+                                        safe_tools.append({
+                                            "name": tc.get("name", "Tool"),
+                                            "summary": str(summary).replace('"', '')[:120],
+                                            "args": {
+                                                "toolSummary": str(args.get("toolSummary", "")).replace('"', ''),
+                                                "CommandLine": str(args.get("CommandLine", "")).replace('"', '')[:120] if args.get("CommandLine") else ""
+                                            }
+                                        })
+                                    messages.append({
+                                        "role": "assistant",
+                                        "step_index": step.get("step_index", 0),
+                                        "created_at": step.get("created_at"),
+                                        "thinking": thinking if len(thinking) < 2000 else thinking[:2000] + "...",
+                                        "tool_calls": safe_tools,
+                                        "type": "planner_response"
+                                    })
+                            # GENERIC: Saídas brutas de ferramentas (não exibir como mensagens no chat)
                         except json.JSONDecodeError:
                             continue
             except Exception as e:

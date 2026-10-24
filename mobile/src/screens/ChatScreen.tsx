@@ -26,6 +26,7 @@ import {
   ArrowDown,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import Markdown from 'react-native-markdown-display';
 import { api } from '../services/api';
 import { ConversationWebSocket } from '../services/websocket';
 import { Conversation, Message, Artifact } from '../types';
@@ -46,22 +47,29 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const wsRef = useRef<ConversationWebSocket | null>(null);
+  const pollTimerRef = useRef<any>(null);
 
-  const loadHistory = async () => {
+  const loadHistory = async (scrollAfter = false) => {
     try {
       const data = await api.getConversation(conversation.id);
-      setMessages(data.messages || []);
-      setArtifacts(data.artifacts || []);
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: false });
-      }, 200);
+      if (data.messages) {
+        setMessages(data.messages);
+      }
+      if (data.artifacts) {
+        setArtifacts(data.artifacts);
+      }
+      if (scrollAfter) {
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 150);
+      }
     } catch (e) {
       console.error('Erro ao carregar mensagens:', e);
     }
   };
 
   useEffect(() => {
-    loadHistory();
+    loadHistory(true);
 
     const ws = new ConversationWebSocket(conversation.id, (payload) => {
       handleLiveEvent(payload);
@@ -71,6 +79,9 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
     return () => {
       ws.disconnect();
+      if (pollTimerRef.current) {
+        clearInterval(pollTimerRef.current);
+      }
     };
   }, [conversation.id]);
 
@@ -78,11 +89,21 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     // 1. Histórico inicial recebido pelo socket
     if (payload.event === 'initial_history' && payload.messages) {
       setMessages(payload.messages);
+      if (payload.artifacts) setArtifacts(payload.artifacts);
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 200);
       return;
     }
 
-    // 2. Stream direto do agy.exe
+    // 2. Atualização automática em tempo real do arquivo transcript.jsonl
+    if (payload.event === 'transcript_updated' && payload.messages) {
+      setMessages(payload.messages);
+      if (payload.artifacts) setArtifacts(payload.artifacts);
+      setIsSending(false);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+      return;
+    }
+
+    // 3. Stream direto do agy.exe se fallback CLI
     if (payload.event === 'stream_step' && payload.raw) {
       const raw = payload.raw;
       const rawEvt = raw.event;
@@ -109,28 +130,10 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
               return [...prev, newMsg];
             }
           });
-        } else if (stepType === 'tool') {
-          // Tool em execução
-          setMessages((prev) => {
-            const toolCall = {
-              name: update.tool_name || update.tool_info?.name || 'Comando',
-              args: update.tool_info?.parameters || {},
-              status: update.state,
-            };
-            const newPlanner: Message = {
-              role: 'assistant',
-              step_index: update.step_index || prev.length,
-              created_at: new Date().toISOString(),
-              tool_calls: [toolCall],
-              type: 'planner_response',
-            };
-            return [...prev, newPlanner];
-          });
         }
       } else if (rawEvt === 'result') {
         setIsSending(false);
-        // Recarregar histórico estruturado final para garantir consistência
-        loadHistory();
+        loadHistory(true);
       }
     }
   };
@@ -143,7 +146,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     setInputPrompt('');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Adicionar mensagem otimista limpa do usuário
+    // Mensagem otimista do usuário
     const tempIndex = messages.length ? Math.max(...messages.map((m) => m.step_index)) + 1 : 1;
     const optimisticMsg: Message = {
       role: 'user',
@@ -160,6 +163,28 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
     try {
       await api.sendMessage(conversation.id, textToSend);
+
+      // Iniciar polling temporário caso o socket demore para refletir
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      let attempts = 0;
+      pollTimerRef.current = setInterval(async () => {
+        attempts++;
+        try {
+          const fresh = await api.getConversation(conversation.id);
+          if (fresh.messages && fresh.messages.length > messages.length) {
+            setMessages(fresh.messages);
+            if (fresh.artifacts) setArtifacts(fresh.artifacts);
+            setIsSending(false);
+            clearInterval(pollTimerRef.current);
+            setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+          }
+        } catch (e) {}
+        if (attempts >= 20) {
+          clearInterval(pollTimerRef.current);
+          setIsSending(false);
+        }
+      }, 1500);
+
     } catch (e: any) {
       Alert.alert('Erro ao enviar mensagem', e.message || 'Falha na comunicação com o Antigravity.');
       setIsSending(false);
@@ -226,7 +251,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         style={{ flex: 1 }}
         data={messages}
         keyExtractor={(item, index) => `${item.step_index}-${item.type}-${index}`}
-        contentContainerStyle={[styles.messagesList, { paddingBottom: 140 }]}
+        contentContainerStyle={[styles.messagesList, { paddingBottom: 160 }]}
         onContentSizeChange={() => {
           if (!showScrollBottom) {
             flatListRef.current?.scrollToEnd({ animated: true });
@@ -285,9 +310,9 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                       <View key={tIdx} style={styles.toolChip}>
                         <Terminal size={12} color="#34d399" style={{ marginRight: 6 }} />
                         <Text style={styles.toolName}>{tool.name}</Text>
-                        {tool.args?.CommandLine || tool.args?.toolSummary ? (
+                        {tool.summary || tool.args?.CommandLine || tool.args?.toolSummary ? (
                           <Text style={styles.toolSummary} numberOfLines={1}>
-                            • {(tool.args.CommandLine || tool.args.toolSummary).replace(/^"|"$/g, '')}
+                            • {(tool.summary || tool.args?.CommandLine || tool.args?.toolSummary).replace(/^"|"$/g, '')}
                           </Text>
                         ) : null}
                       </View>
@@ -298,6 +323,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             );
           }
 
+          // Resposta do Assistente formatada em Markdown idêntica ao PC
           return (
             <View style={styles.assistantBubble}>
               <View style={styles.assistantHeader}>
@@ -316,7 +342,9 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                   )}
                 </TouchableOpacity>
               </View>
-              <Text style={styles.assistantText}>{item.content}</Text>
+              <Markdown style={markdownStyles}>
+                {item.content || ''}
+              </Markdown>
             </View>
           );
         }}
@@ -371,6 +399,126 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     </KeyboardAvoidingView>
   );
 }
+
+const markdownStyles = StyleSheet.create({
+  body: {
+    color: '#e2e8f0',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  heading1: {
+    color: '#38bdf8',
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  heading2: {
+    color: '#60a5fa',
+    fontSize: 17,
+    fontWeight: '700',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  heading3: {
+    color: '#93c5fd',
+    fontSize: 15,
+    fontWeight: '600',
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  paragraph: {
+    marginTop: 0,
+    marginBottom: 8,
+  },
+  link: {
+    color: '#38bdf8',
+    textDecorationLine: 'underline',
+  },
+  code_inline: {
+    backgroundColor: '#1e293b',
+    color: '#38bdf8',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  code_block: {
+    backgroundColor: '#0f172a',
+    borderColor: '#1e293b',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginVertical: 8,
+    color: '#f8fafc',
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  fence: {
+    backgroundColor: '#0f172a',
+    borderColor: '#1e293b',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginVertical: 8,
+    color: '#f8fafc',
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  blockquote: {
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+    borderLeftColor: '#38bdf8',
+    borderLeftWidth: 3,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginVertical: 6,
+    borderRadius: 4,
+  },
+  bullet_list: {
+    marginVertical: 4,
+  },
+  ordered_list: {
+    marginVertical: 4,
+  },
+  list_item: {
+    marginVertical: 2,
+    flexDirection: 'row',
+  },
+  table: {
+    borderColor: '#334155',
+    borderWidth: 1,
+    borderRadius: 6,
+    marginVertical: 8,
+  },
+  th: {
+    backgroundColor: '#1e293b',
+    padding: 8,
+    borderColor: '#334155',
+    borderWidth: 0.5,
+    color: '#f8fafc',
+    fontWeight: '700',
+  },
+  td: {
+    padding: 8,
+    borderColor: '#334155',
+    borderWidth: 0.5,
+    color: '#e2e8f0',
+  },
+  hr: {
+    backgroundColor: '#334155',
+    height: 1,
+    marginVertical: 12,
+  },
+  strong: {
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  em: {
+    fontStyle: 'italic',
+    color: '#cbd5e1',
+  },
+});
 
 const styles = StyleSheet.create({
   container: {
@@ -538,11 +686,6 @@ const styles = StyleSheet.create({
   },
   copyBtn: {
     padding: 4,
-  },
-  assistantText: {
-    color: '#f8fafc',
-    fontSize: 14,
-    lineHeight: 22,
   },
   scrollBottomBtn: {
     position: 'absolute',
