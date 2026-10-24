@@ -8,10 +8,11 @@ import {
   ActivityIndicator,
   Platform,
   Alert,
+  Linking,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
-import { DownloadCloud, CheckCircle2, AlertCircle, X, Sparkles } from 'lucide-react-native';
+import { DownloadCloud, CheckCircle2, AlertCircle, X, Sparkles, ExternalLink } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import appConfig from '../../app.json';
 
@@ -36,6 +37,7 @@ export default function UpdateModal({
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [downloadedUri, setDownloadedUri] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,6 +51,7 @@ export default function UpdateModal({
     setErrorMsg(null);
     setDownloadProgress(0);
     setIsDownloading(false);
+    setDownloadedUri(null);
 
     try {
       const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
@@ -114,6 +117,38 @@ export default function UpdateModal({
     return false;
   };
 
+  const triggerInstall = async (fileUri: string) => {
+    try {
+      const contentUri = await FileSystem.getContentUriAsync(fileUri);
+      // FLAG_GRANT_READ_URI_PERMISSION (1) | FLAG_ACTIVITY_NEW_TASK (268435456)
+      const flags = 1 | 268435456;
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        flags: flags,
+        type: 'application/vnd.android.package-archive',
+      });
+    } catch (err: any) {
+      console.warn('Erro ao disparar action VIEW:', err);
+      try {
+        const contentUri = await FileSystem.getContentUriAsync(fileUri);
+        await IntentLauncher.startActivityAsync('android.intent.action.INSTALL_PACKAGE', {
+          data: contentUri,
+          flags: 1 | 268435456,
+          type: 'application/vnd.android.package-archive',
+        });
+      } catch (err2: any) {
+        Alert.alert(
+          'Instalador do Android',
+          'O sistema não conseguiu abrir o instalador nativo automaticamente. Deseja abrir o link no navegador para instalar?',
+          [
+            { text: 'Abrir no Navegador', onPress: () => downloadUrl && Linking.openURL(downloadUrl) },
+            { text: 'Cancelar', style: 'cancel' },
+          ]
+        );
+      }
+    }
+  };
+
   const handleDownloadAndInstall = async () => {
     if (!downloadUrl) {
       Alert.alert('Erro', 'Link do arquivo APK não encontrado na release.');
@@ -127,9 +162,10 @@ export default function UpdateModal({
 
     setIsDownloading(true);
     setDownloadProgress(0);
+    setDownloadedUri(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    const targetFile = `${FileSystem.documentDirectory}AntigravityRemote-update.apk`;
+    const targetFile = `${FileSystem.cacheDirectory}AntigravityRemote-update.apk`;
 
     try {
       // Deletar versão antiga se existir
@@ -156,20 +192,21 @@ export default function UpdateModal({
       }
 
       setDownloadProgress(1);
+      setDownloadedUri(result.uri);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-      // Disparar o instalador de pacotes nativo do Android
-      const contentUri = await FileSystem.getContentUriAsync(result.uri);
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: contentUri,
-        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
-        type: 'application/vnd.android.package-archive',
-      });
-
-      onClose();
+      // Disparar o instalador nativo do Android
+      await triggerInstall(result.uri);
     } catch (err: any) {
       console.error('Erro ao baixar/instalar atualização:', err);
-      Alert.alert('Erro na Instalação', err.message || 'Não foi possível disparar o instalador do Android.');
+      Alert.alert(
+        'Erro na Instalação',
+        `${err.message || 'Não foi possível disparar o instalador'}. Deseja abrir o download pelo navegador?`,
+        [
+          { text: 'Abrir no Navegador', onPress: () => downloadUrl && Linking.openURL(downloadUrl) },
+          { text: 'Fechar', style: 'cancel' }
+        ]
+      );
     } finally {
       setIsDownloading(false);
     }
@@ -221,7 +258,7 @@ export default function UpdateModal({
 
               <Text style={styles.congratsTitle}>🚀 Nova Versão Pronta para Instalar!</Text>
               <Text style={styles.congratsDesc}>
-                O aplicativo será atualizado automaticamente sem perder nenhuma configuração ou histórico.
+                O aplicativo será atualizado mantendo todas as suas configurações e conexões.
               </Text>
 
               {isDownloading ? (
@@ -238,6 +275,29 @@ export default function UpdateModal({
                     />
                   </View>
                   <ActivityIndicator size="small" color="#38bdf8" style={{ marginTop: 10 }} />
+                </View>
+              ) : downloadedUri ? (
+                <View style={styles.downloadCompleteBox}>
+                  <CheckCircle2 size={36} color="#34d399" style={{ marginBottom: 8 }} />
+                  <Text style={styles.downloadCompleteTitle}>APK Baixado com Sucesso!</Text>
+                  <Text style={styles.downloadCompleteDesc}>
+                    Se o instalador do Android não abrir sozinho, toque no botão abaixo:
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.updateBtn}
+                    onPress={() => triggerInstall(downloadedUri)}
+                    activeOpacity={0.85}
+                  >
+                    <DownloadCloud size={20} color="#ffffff" style={{ marginRight: 8 }} />
+                    <Text style={styles.updateBtnText}>Abrir Instalador do Android</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.fallbackBrowserBtn}
+                    onPress={() => downloadUrl && Linking.openURL(downloadUrl)}
+                  >
+                    <ExternalLink size={14} color="#38bdf8" style={{ marginRight: 6 }} />
+                    <Text style={styles.fallbackBrowserText}>Instalar via Navegador</Text>
+                  </TouchableOpacity>
                 </View>
               ) : (
                 <TouchableOpacity
@@ -359,26 +419,26 @@ const styles = StyleSheet.create({
   },
   congratsTitle: {
     color: '#f8fafc',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     textAlign: 'center',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   congratsDesc: {
     color: '#94a3b8',
     fontSize: 13,
     textAlign: 'center',
     lineHeight: 18,
-    marginBottom: 20,
+    marginBottom: 18,
   },
   downloadBox: {
-    marginTop: 10,
     alignItems: 'center',
+    paddingVertical: 10,
   },
   progressText: {
     color: '#38bdf8',
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
     marginBottom: 8,
   },
   progressBarBg: {
@@ -387,43 +447,75 @@ const styles = StyleSheet.create({
     backgroundColor: '#0f172a',
     borderRadius: 4,
     overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#1e293b',
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#0284c7',
+    backgroundColor: '#38bdf8',
     borderRadius: 4,
   },
   updateBtn: {
-    backgroundColor: '#0284c7',
-    height: 48,
-    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#0284c7',
+    paddingVertical: 14,
+    borderRadius: 14,
+    elevation: 3,
   },
   updateBtnText: {
     color: '#ffffff',
     fontSize: 15,
     fontWeight: '700',
   },
+  downloadCompleteBox: {
+    alignItems: 'center',
+  },
+  downloadCompleteTitle: {
+    color: '#34d399',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  downloadCompleteDesc: {
+    color: '#94a3b8',
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  fallbackBrowserBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+    paddingVertical: 8,
+  },
+  fallbackBrowserText: {
+    color: '#38bdf8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   upToDateTitle: {
     color: '#f8fafc',
     fontSize: 16,
     fontWeight: '700',
-    textAlign: 'center',
     marginBottom: 6,
+    textAlign: 'center',
   },
   upToDateDesc: {
     color: '#94a3b8',
     fontSize: 13,
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 18,
   },
   closeActionBtn: {
-    backgroundColor: '#1e293b',
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
     paddingVertical: 10,
+    backgroundColor: '#1e293b',
     borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
   },
   closeActionBtnText: {
     color: '#f8fafc',
@@ -438,15 +530,17 @@ const styles = StyleSheet.create({
   },
   errorDesc: {
     color: '#94a3b8',
-    fontSize: 12,
+    fontSize: 13,
     textAlign: 'center',
-    marginBottom: 14,
+    marginBottom: 16,
   },
   retryBtn: {
     backgroundColor: '#1e293b',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
   },
   retryBtnText: {
     color: '#38bdf8',
