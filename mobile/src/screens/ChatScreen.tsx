@@ -12,6 +12,8 @@ import {
   Clipboard,
   Alert,
   Image,
+  Modal,
+  ScrollView,
 } from 'react-native';
 import {
   ArrowLeft,
@@ -25,12 +27,24 @@ import {
   Check,
   Folder,
   ArrowDown,
+  Image as ImageIcon,
+  Camera,
+  X,
+  HelpCircle,
+  FileCode,
+  Globe,
+  Radio,
+  CheckSquare,
+  Square,
+  Circle,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import * as ImagePicker from 'expo-image-picker';
 import Markdown from 'react-native-markdown-display';
 import { api } from '../services/api';
+import { StorageService } from '../services/storage';
 import { ConversationWebSocket } from '../services/websocket';
-import { Conversation, Message, Artifact } from '../types';
+import { Conversation, Message, Artifact, ToolCall, QuestionItem, MediaItem } from '../types';
 
 interface ChatScreenProps {
   conversation: Conversation;
@@ -43,35 +57,41 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [inputPrompt, setInputPrompt] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [expandedThoughts, setExpandedThoughts] = useState<Record<number, boolean>>({});
+  const [isActive, setIsActive] = useState(false);
+  const [expandedThoughts, setExpandedThoughts] = useState<Record<string, boolean>>({});
+  const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [displayCount, setDisplayCount] = useState(35);
+
+  // Anexo de Imagem
+  const [selectedImage, setSelectedImage] = useState<{ uri: string; base64: string; filename: string } | null>(null);
+  const [showImagePickerModal, setShowImagePickerModal] = useState(false);
+
+  // Resposta para Pergunta Interativa (ask_question)
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
+  const [customAnswer, setCustomAnswer] = useState<Record<string, string>>({});
+
   const flatListRef = useRef<FlatList>(null);
   const wsRef = useRef<ConversationWebSocket | null>(null);
   const pollTimerRef = useRef<any>(null);
 
-  const loadHistory = async (scrollAfter = false) => {
-    try {
-      const data = await api.getConversation(conversation.id);
-      if (data.messages) {
-        setMessages(data.messages);
-      }
-      if (data.artifacts) {
-        setArtifacts(data.artifacts);
-      }
-      if (scrollAfter) {
-        setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: true });
-        }, 150);
-      }
-    } catch (e) {
-      console.error('Erro ao carregar mensagens:', e);
-    }
-  };
-
+  // 1. Carregamento inicial (Cache instantâneo local + busca em rede)
   useEffect(() => {
-    loadHistory(true);
+    let isMounted = true;
 
+    // Cache local instantâneo (0ms de espera)
+    StorageService.getChatCache(conversation.id).then((cached) => {
+      if (isMounted && cached && cached.messages && cached.messages.length > 0) {
+        setMessages(cached.messages);
+        if (cached.artifacts) setArtifacts(cached.artifacts);
+      }
+    });
+
+    // Busca fresca na rede em segundo plano
+    loadHistory(false);
+
+    // WebSocket em tempo real com eventos ao vivo
     const ws = new ConversationWebSocket(conversation.id, (payload) => {
       handleLiveEvent(payload);
     });
@@ -79,6 +99,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     wsRef.current = ws;
 
     return () => {
+      isMounted = false;
       ws.disconnect();
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
@@ -86,115 +107,186 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     };
   }, [conversation.id]);
 
+  const loadHistory = async (scrollAfter = false) => {
+    try {
+      const data = await api.getConversation(conversation.id);
+      if (data.messages) {
+        setMessages(data.messages);
+        StorageService.saveChatCache(conversation.id, data.messages, data.artifacts || []);
+      }
+      if (data.artifacts) {
+        setArtifacts(data.artifacts);
+      }
+      if (data.is_active !== undefined) {
+        setIsActive(data.is_active);
+      }
+      if (scrollAfter) {
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 150);
+      }
+    } catch (e) {
+      console.warn('Erro ao carregar mensagens:', e);
+    }
+  };
+
   const handleLiveEvent = (payload: any) => {
-    // 1. Histórico inicial recebido pelo socket
-    if (payload.event === 'initial_history' && payload.messages) {
+    // 1. Histórico inicial ou atualização completa
+    if ((payload.event === 'initial_history' || payload.event === 'transcript_updated') && payload.messages) {
       setMessages(payload.messages);
       if (payload.artifacts) setArtifacts(payload.artifacts);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 200);
-      return;
-    }
-
-    // 2. Atualização automática em tempo real do arquivo transcript.jsonl
-    if (payload.event === 'transcript_updated' && payload.messages) {
-      setMessages(payload.messages);
-      if (payload.artifacts) setArtifacts(payload.artifacts);
+      if (payload.is_active !== undefined) setIsActive(payload.is_active);
       setIsSending(false);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+      StorageService.saveChatCache(conversation.id, payload.messages, payload.artifacts || []);
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      }, 100);
       return;
     }
 
-    // 3. Stream direto do agy.exe se fallback CLI
+    // 2. Stream incremental se houver
     if (payload.event === 'stream_step' && payload.raw) {
       const raw = payload.raw;
-      const rawEvt = raw.event;
-
-      if (rawEvt === 'step_update' && raw.step_update) {
-        const update = raw.step_update;
-        const stepType = update.step_type;
-
-        if (stepType === 'agent_response' && update.text_delta) {
-          setIsSending(false);
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last && last.role === 'assistant' && last.type === 'assistant_message') {
-              const updated = { ...last, content: (last.content || '') + update.text_delta };
-              return [...prev.slice(0, -1), updated];
-            } else {
-              const newMsg: Message = {
-                role: 'assistant',
-                step_index: update.step_index || prev.length,
-                created_at: new Date().toISOString(),
-                content: update.text_delta,
-                type: 'assistant_message',
-              };
-              return [...prev, newMsg];
-            }
-          });
-        }
-      } else if (rawEvt === 'result') {
+      if (raw.event === 'result') {
         setIsSending(false);
+        setIsActive(false);
         loadHistory(true);
       }
     }
   };
 
+  // Envio de mensagem ou resposta interativa
   const handleSend = async (overrideText?: string) => {
     const textToSend = (overrideText || inputPrompt).trim();
-    if (!textToSend || isSending) return;
+    if (!textToSend && !selectedImage) return;
+    if (isSending) return;
 
     setIsSending(true);
     setInputPrompt('');
+    const imagePayload = selectedImage ? { base64: selectedImage.base64, filename: selectedImage.filename } : undefined;
+    const tempImageUri = selectedImage?.uri;
+    setSelectedImage(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Mensagem otimista do usuário
+    // Mensagem otimista imediata na tela
     const tempIndex = messages.length ? Math.max(...messages.map((m) => m.step_index)) + 1 : 1;
     const optimisticMsg: Message = {
       role: 'user',
       step_index: tempIndex,
       created_at: new Date().toISOString(),
       content: textToSend,
+      media: tempImageUri ? [{ mime_type: 'image/png', filename: 'upload.png', local_uri: tempImageUri }] : undefined,
       type: 'user_message',
     };
     setMessages((prev) => [...prev, optimisticMsg]);
+    setIsActive(true);
 
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
     }, 100);
 
     try {
-      await api.sendMessage(conversation.id, textToSend);
+      await api.sendMessage(conversation.id, textToSend, undefined, imagePayload);
 
-      // Iniciar polling temporário caso o socket demore para refletir
+      // Polling de garantia enquanto o modelo responde
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       let attempts = 0;
       pollTimerRef.current = setInterval(async () => {
         attempts++;
         try {
           const fresh = await api.getConversation(conversation.id);
-          if (fresh.messages && fresh.messages.length > messages.length) {
+          if (fresh.messages && fresh.messages.length > 0) {
             setMessages(fresh.messages);
             if (fresh.artifacts) setArtifacts(fresh.artifacts);
-            setIsSending(false);
-            clearInterval(pollTimerRef.current);
-            setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+            if (!fresh.is_active) {
+              setIsSending(false);
+              setIsActive(false);
+              clearInterval(pollTimerRef.current);
+            }
           }
         } catch (e) {}
-        if (attempts >= 20) {
+        if (attempts >= 40) {
           clearInterval(pollTimerRef.current);
           setIsSending(false);
+          setIsActive(false);
         }
-      }, 1500);
+      }, 1000);
 
     } catch (e: any) {
-      Alert.alert('Erro ao enviar mensagem', e.message || 'Falha na comunicação com o Antigravity.');
+      Alert.alert('Erro ao enviar', e.message || 'Falha na comunicação com o Antigravity.');
       setIsSending(false);
+      setIsActive(false);
     }
   };
 
-  const toggleThought = (idx: number) => {
+  // Seleção de Imagens
+  const pickImageFromGallery = async () => {
+    setShowImagePickerModal(false);
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permissão necessária', 'Permita o acesso às fotos para enviar imagens.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.8,
+        base64: true,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        if (asset.base64) {
+          setSelectedImage({
+            uri: asset.uri,
+            base64: asset.base64,
+            filename: asset.fileName || `image_${Date.now()}.png`,
+          });
+          Haptics.selectionAsync();
+        }
+      }
+    } catch (e: any) {
+      Alert.alert('Erro ao carregar imagem', e.message);
+    }
+  };
+
+  const takePhotoWithCamera = async () => {
+    setShowImagePickerModal(false);
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permissão necessária', 'Permita o acesso à câmera para tirar fotos.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.8,
+        base64: true,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        if (asset.base64) {
+          setSelectedImage({
+            uri: asset.uri,
+            base64: asset.base64,
+            filename: `photo_${Date.now()}.jpg`,
+          });
+          Haptics.selectionAsync();
+        }
+      }
+    } catch (e: any) {
+      Alert.alert('Erro na câmera', e.message);
+    }
+  };
+
+  const toggleThought = (key: string) => {
     Haptics.selectionAsync();
-    setExpandedThoughts((prev) => ({ ...prev, [idx]: !prev[idx] }));
+    setExpandedThoughts((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const toggleTool = (key: string) => {
+    Haptics.selectionAsync();
+    setExpandedTools((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const copyToClipboard = (text: string, idx: number) => {
@@ -209,16 +301,121 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     flatListRef.current?.scrollToEnd({ animated: true });
   };
 
+  // Ícone visual por tipo de ferramenta
+  const renderToolIcon = (icon?: string) => {
+    switch (icon) {
+      case 'python':
+        return <Text style={styles.badgeEmoji}>🐍</Text>;
+      case 'react':
+        return <Text style={styles.badgeEmoji}>⚛</Text>;
+      case 'typescript':
+        return <Text style={styles.badgeTextSmall}>TS</Text>;
+      case 'terminal':
+        return <Terminal size={13} color="#38bdf8" />;
+      case 'search':
+        return <Globe size={13} color="#60a5fa" />;
+      case 'question':
+        return <HelpCircle size={13} color="#f59e0b" />;
+      default:
+        return <FileCode size={13} color="#94a3b8" />;
+    }
+  };
+
+  // Renderizador de pergunta interativa (ask_question)
+  const renderInteractiveQuestion = (toolCall: ToolCall, stepKey: string) => {
+    const questions = toolCall.questions || [];
+    if (questions.length === 0) return null;
+
+    return (
+      <View style={styles.questionCard}>
+        <View style={styles.questionHeader}>
+          <HelpCircle size={16} color="#f59e0b" style={{ marginRight: 6 }} />
+          <Text style={styles.questionTitle}>Pergunta do Antigravity</Text>
+        </View>
+
+        {questions.map((q, qIdx) => {
+          const selected = questionAnswers[`${stepKey}_${qIdx}`] || '';
+          return (
+            <View key={qIdx} style={styles.questionBody}>
+              <Text style={styles.questionPrompt}>{q.question}</Text>
+              <View style={styles.optionsWrap}>
+                {q.options.map((opt, optIdx) => {
+                  const isSelected = selected === opt;
+                  return (
+                    <TouchableOpacity
+                      key={optIdx}
+                      style={[styles.optionBtn, isSelected && styles.optionBtnSelected]}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        setQuestionAnswers((prev) => ({ ...prev, [`${stepKey}_${qIdx}`]: opt }));
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      {isSelected ? (
+                        <Circle size={14} color="#38bdf8" fill="#38bdf8" style={{ marginRight: 8 }} />
+                      ) : (
+                        <Circle size={14} color="#64748b" style={{ marginRight: 8 }} />
+                      )}
+                      <Text style={[styles.optionText, isSelected && styles.optionTextSelected]}>
+                        {opt}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* Opção de resposta digitada */}
+              <TextInput
+                style={styles.customAnswerInput}
+                placeholder="Ou digite outra resposta..."
+                placeholderTextColor="#64748b"
+                value={customAnswer[`${stepKey}_${qIdx}`] || ''}
+                onChangeText={(text) => {
+                  setCustomAnswer((prev) => ({ ...prev, [`${stepKey}_${qIdx}`]: text }));
+                  if (text) {
+                    setQuestionAnswers((prev) => ({ ...prev, [`${stepKey}_${qIdx}`]: text }));
+                  }
+                }}
+              />
+
+              {/* Botão de Enviar Resposta */}
+              <TouchableOpacity
+                style={[
+                  styles.submitAnswerBtn,
+                  !selected && !customAnswer[`${stepKey}_${qIdx}`] && styles.submitAnswerBtnDisabled,
+                ]}
+                disabled={!selected && !customAnswer[`${stepKey}_${qIdx}`]}
+                onPress={() => {
+                  const finalChoice = customAnswer[`${stepKey}_${qIdx}`] || selected;
+                  if (finalChoice) {
+                    handleSend(finalChoice);
+                  }
+                }}
+              >
+                <Check size={14} color="#ffffff" style={{ marginRight: 6 }} />
+                <Text style={styles.submitAnswerBtnText}>Confirmar e Enviar Resposta</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })}
+      </View>
+    );
+  };
+
+  // Janela de renderização para fluidez
+  const displayedMessages = messages.slice(-displayCount);
+  const hasMoreMessages = messages.length > displayCount;
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       style={styles.container}
     >
-      {/* Cabeçalho */}
+      {/* Cabeçalho Shadcn Obsidian */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={onBack}>
-          <ArrowLeft size={22} color="#f8fafc" />
+          <ArrowLeft size={20} color="#f8fafc" />
         </TouchableOpacity>
 
         <View style={styles.headerTitleWrap}>
@@ -230,6 +427,12 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             <Text style={styles.headerSubText} numberOfLines={1}>
               {conversation.project_name}
             </Text>
+            {isActive && (
+              <View style={styles.activePill}>
+                <View style={styles.activeDot} />
+                <Text style={styles.activePillText}>Executando turnos</Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -246,13 +449,25 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         )}
       </View>
 
-      {/* Lista de Mensagens */}
+      {/* Lista de Mensagens & Timeline do Desktop */}
       <FlatList
         ref={flatListRef}
         style={{ flex: 1 }}
-        data={messages}
+        data={displayedMessages}
         keyExtractor={(item, index) => `${item.step_index}-${item.type}-${index}`}
-        contentContainerStyle={[styles.messagesList, { paddingBottom: 160 }]}
+        contentContainerStyle={[styles.messagesList, { paddingBottom: 170 }]}
+        ListHeaderComponent={
+          hasMoreMessages ? (
+            <TouchableOpacity
+              style={styles.loadMoreBtn}
+              onPress={() => setDisplayCount((prev) => prev + 35)}
+            >
+              <Text style={styles.loadMoreText}>
+                Carregar mensagens anteriores ({messages.length - displayCount} restantes)
+              </Text>
+            </TouchableOpacity>
+          ) : null
+        }
         onContentSizeChange={() => {
           if (!showScrollBottom) {
             flatListRef.current?.scrollToEnd({ animated: true });
@@ -268,96 +483,161 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         }}
         scrollEventThrottle={100}
         renderItem={({ item, index }) => {
+          const stepKey = `${item.step_index}_${index}`;
+
+          // 1. Mensagem do Usuário
           if (item.type === 'user_message') {
             return (
               <View style={styles.userBubble}>
-                <Text style={styles.userText}>{item.content}</Text>
+                {item.media && item.media.length > 0 && (
+                  <View style={styles.userMediaContainer}>
+                    {item.media.map((m: MediaItem, mIdx: number) => (
+                      <Image
+                        key={mIdx}
+                        source={{ uri: m.local_uri || api.getMediaUrl(conversation.id, m.filename) }}
+                        style={styles.userMediaImage}
+                        resizeMode="cover"
+                      />
+                    ))}
+                  </View>
+                )}
+                {item.content ? <Text style={styles.userText}>{item.content}</Text> : null}
               </View>
             );
           }
 
-          if (item.type === 'planner_response') {
-            const isExpanded = !!expandedThoughts[index];
-            const hasTools = item.tool_calls && item.tool_calls.length > 0;
+          // 2. Raciocínio Interno (Thought for Xs >)
+          if (item.type === 'thought_step') {
+            const isExpanded = !!expandedThoughts[stepKey];
             return (
-              <View style={styles.plannerCard}>
-                {item.thinking ? (
-                  <TouchableOpacity
-                    style={styles.thoughtHeader}
-                    onPress={() => toggleThought(index)}
-                    activeOpacity={0.7}
-                  >
-                    <Sparkles size={14} color="#38bdf8" style={{ marginRight: 6 }} />
-                    <Text style={styles.thoughtTitle}>
-                      {isExpanded ? 'Raciocínio Interno (Ocultar)' : 'Pensamento do Agente (Ver)'}
-                    </Text>
-                    {isExpanded ? (
-                      <ChevronDown size={14} color="#94a3b8" />
-                    ) : (
-                      <ChevronRight size={14} color="#94a3b8" />
-                    )}
-                  </TouchableOpacity>
-                ) : null}
+              <View style={styles.timelineItem}>
+                <TouchableOpacity
+                  style={styles.thoughtAccordionHeader}
+                  onPress={() => toggleThought(stepKey)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.thoughtLabelText}>{item.thought_label || 'Thought for 5s'}</Text>
+                  {isExpanded ? (
+                    <ChevronDown size={14} color="#64748b" style={{ marginLeft: 6 }} />
+                  ) : (
+                    <ChevronRight size={14} color="#64748b" style={{ marginLeft: 6 }} />
+                  )}
+                </TouchableOpacity>
 
-                {isExpanded && item.thinking ? (
-                  <View style={styles.thoughtBody}>
-                    <Text style={styles.thoughtText}>{item.thinking}</Text>
-                  </View>
-                ) : null}
-
-                {hasTools && (
-                  <View style={styles.toolsContainer}>
-                    {item.tool_calls!.map((tool: any, tIdx: number) => (
-                      <View key={tIdx} style={styles.toolChip}>
-                        <Terminal size={12} color="#34d399" style={{ marginRight: 6 }} />
-                        <Text style={styles.toolName}>{tool.name}</Text>
-                        {tool.summary || tool.args?.CommandLine || tool.args?.toolSummary ? (
-                          <Text style={styles.toolSummary} numberOfLines={1}>
-                            • {(tool.summary || tool.args?.CommandLine || tool.args?.toolSummary).replace(/^"|"$/g, '')}
-                          </Text>
-                        ) : null}
-                      </View>
-                    ))}
+                {isExpanded && item.thinking && (
+                  <View style={styles.thoughtExpandedBox}>
+                    <Markdown style={thoughtMarkdownStyles}>{item.thinking}</Markdown>
                   </View>
                 )}
               </View>
             );
           }
 
-          // Resposta do Assistente formatada em Markdown idêntica ao PC
-          return (
-            <View style={styles.assistantBubble}>
-              <View style={styles.assistantHeader}>
-                <Image
-                  source={require('../../assets/icon.png')}
-                  style={styles.assistantAvatarImg}
-                  resizeMode="contain"
-                />
-                <Text style={styles.assistantName}>Antigravity</Text>
+          // 3. Ferramentas Executadas (Analyzed 🐍 / Ran check transcript...)
+          if (item.type === 'tool_step' && item.tool_call) {
+            const tc = item.tool_call;
+            const isExpanded = !!expandedTools[stepKey];
+
+            // Se for pergunta interativa
+            if (tc.name === 'ask_question') {
+              return renderInteractiveQuestion(tc, stepKey);
+            }
+
+            return (
+              <View style={styles.timelineItem}>
                 <TouchableOpacity
-                  style={styles.copyBtn}
-                  onPress={() => copyToClipboard(item.content || '', index)}
+                  style={styles.toolAccordionHeader}
+                  onPress={() => toggleTool(stepKey)}
+                  activeOpacity={0.7}
                 >
-                  {copiedIndex === index ? (
-                    <Check size={14} color="#34d399" />
+                  <View style={styles.toolIconWrap}>{renderToolIcon(tc.icon)}</View>
+                  <Text style={styles.toolTitleText} numberOfLines={1}>
+                    {tc.title || tc.name}
+                  </Text>
+                  {isExpanded ? (
+                    <ChevronDown size={14} color="#64748b" style={{ marginLeft: 'auto' }} />
                   ) : (
-                    <Copy size={14} color="#64748b" />
+                    <ChevronRight size={14} color="#64748b" style={{ marginLeft: 'auto' }} />
                   )}
                 </TouchableOpacity>
+
+                {isExpanded && tc.detail && (
+                  <View style={styles.toolDetailBox}>
+                    <Text style={styles.toolDetailText} selectable>
+                      {tc.detail}
+                    </Text>
+                  </View>
+                )}
               </View>
-              <Markdown style={markdownStyles}>
-                {item.content || ''}
-              </Markdown>
-            </View>
-          );
+            );
+          }
+
+          // 4. Resposta do Assistente (Markdown formatado)
+          if (item.type === 'assistant_message' || item.type === 'planner_response') {
+            const content = item.content || '';
+            if (!content.trim()) return null;
+
+            return (
+              <View style={styles.assistantCard}>
+                <View style={styles.assistantCardHeader}>
+                  <Image
+                    source={require('../../assets/icon.png')}
+                    style={styles.assistantAvatar}
+                  />
+                  <Text style={styles.assistantName}>Antigravity</Text>
+                  <TouchableOpacity
+                    style={styles.copyBtn}
+                    onPress={() => copyToClipboard(content, index)}
+                  >
+                    {copiedIndex === index ? (
+                      <Check size={14} color="#34d399" />
+                    ) : (
+                      <Copy size={14} color="#94a3b8" />
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                <Markdown style={markdownStyles}>{content}</Markdown>
+              </View>
+            );
+          }
+
+          return null;
         }}
+        ListFooterComponent={
+          (isActive || isSending) ? (
+            <View style={styles.workingCard}>
+              <View style={styles.workingPulseDot} />
+              <Text style={styles.workingText}>Working</Text>
+            </View>
+          ) : null
+        }
       />
 
-      {/* Botão Flutuante para Descer até o final se rolou para cima */}
+      {/* Botão Flutuante de Rolar para Baixo */}
       {showScrollBottom && (
         <TouchableOpacity style={styles.scrollBottomBtn} onPress={scrollToBottom}>
           <ArrowDown size={18} color="#ffffff" />
         </TouchableOpacity>
+      )}
+
+      {/* Preview de Imagem Anexada */}
+      {selectedImage && (
+        <View style={styles.imagePreviewWrap}>
+          <Image source={{ uri: selectedImage.uri }} style={styles.imagePreviewThumb} />
+          <View style={{ flex: 1, marginLeft: 10 }}>
+            <Text style={styles.imagePreviewTitle} numberOfLines={1}>
+              {selectedImage.filename}
+            </Text>
+            <Text style={styles.imagePreviewSub}>Imagem pronta para envio</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.removeImageBtn}
+            onPress={() => setSelectedImage(null)}
+          >
+            <X size={16} color="#ef4444" />
+          </TouchableOpacity>
+        </View>
       )}
 
       {/* Barra de Ações Rápidas (Slash Commands) */}
@@ -376,21 +656,31 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         ))}
       </View>
 
-      {/* Input de Envio */}
+      {/* Input de Envio Shadcn */}
       <View style={styles.inputContainer}>
+        {/* Botão de Anexo de Foto */}
+        <TouchableOpacity
+          style={styles.attachBtn}
+          onPress={() => setShowImagePickerModal(true)}
+          disabled={isSending}
+        >
+          <ImageIcon size={20} color="#38bdf8" />
+        </TouchableOpacity>
+
         <TextInput
           style={styles.input}
-          placeholder="Digite sua mensagem para o Antigravity..."
+          placeholder="Digite para o Antigravity..."
           placeholderTextColor="#64748b"
           value={inputPrompt}
           onChangeText={setInputPrompt}
           multiline
-          maxLength={5000}
+          maxLength={8000}
         />
+
         <TouchableOpacity
-          style={[styles.sendBtn, (!inputPrompt.trim() || isSending) && styles.sendBtnDisabled]}
+          style={[styles.sendBtn, (!inputPrompt.trim() && !selectedImage) && styles.sendBtnDisabled]}
           onPress={() => handleSend()}
-          disabled={!inputPrompt.trim() || isSending}
+          disabled={(!inputPrompt.trim() && !selectedImage) || isSending}
         >
           {isSending ? (
             <ActivityIndicator size="small" color="#ffffff" />
@@ -399,154 +689,75 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           )}
         </TouchableOpacity>
       </View>
+
+      {/* Modal de Escolha da Imagem */}
+      <Modal
+        visible={showImagePickerModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowImagePickerModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowImagePickerModal(false)}
+        >
+          <View style={styles.pickerModalContent}>
+            <Text style={styles.pickerModalTitle}>Anexar Imagem</Text>
+
+            <TouchableOpacity style={styles.pickerOption} onPress={takePhotoWithCamera}>
+              <Camera size={20} color="#38bdf8" style={{ marginRight: 12 }} />
+              <Text style={styles.pickerOptionText}>Tirar Foto com a Câmera</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.pickerOption} onPress={pickImageFromGallery}>
+              <ImageIcon size={20} color="#34d399" style={{ marginRight: 12 }} />
+              <Text style={styles.pickerOptionText}>Escolher da Galeria</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.pickerOption, { borderBottomWidth: 0 }]}
+              onPress={() => setShowImagePickerModal(false)}
+            >
+              <Text style={[styles.pickerOptionText, { color: '#ef4444' }]}>Cancelar</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
 
-const markdownStyles = StyleSheet.create({
-  body: {
-    color: '#e2e8f0',
-    fontSize: 14,
-    lineHeight: 22,
-  },
-  heading1: {
-    color: '#38bdf8',
-    fontSize: 20,
-    fontWeight: '700',
-    marginTop: 14,
-    marginBottom: 6,
-  },
-  heading2: {
-    color: '#60a5fa',
-    fontSize: 17,
-    fontWeight: '700',
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  heading3: {
-    color: '#93c5fd',
-    fontSize: 15,
-    fontWeight: '600',
-    marginTop: 10,
-    marginBottom: 4,
-  },
-  paragraph: {
-    marginTop: 0,
-    marginBottom: 8,
-  },
-  link: {
-    color: '#38bdf8',
-    textDecorationLine: 'underline',
-  },
-  code_inline: {
-    backgroundColor: '#1e293b',
-    color: '#38bdf8',
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    fontSize: 13,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-  },
-  code_block: {
-    backgroundColor: '#0f172a',
-    borderColor: '#1e293b',
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    marginVertical: 8,
-    color: '#f8fafc',
-    fontSize: 13,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-  },
-  fence: {
-    backgroundColor: '#0f172a',
-    borderColor: '#1e293b',
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
-    marginVertical: 8,
-    color: '#f8fafc',
-    fontSize: 13,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-  },
-  blockquote: {
-    backgroundColor: 'rgba(56, 189, 248, 0.08)',
-    borderLeftColor: '#38bdf8',
-    borderLeftWidth: 3,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginVertical: 6,
-    borderRadius: 4,
-  },
-  bullet_list: {
-    marginVertical: 4,
-  },
-  ordered_list: {
-    marginVertical: 4,
-  },
-  list_item: {
-    marginVertical: 2,
-    flexDirection: 'row',
-  },
-  table: {
-    borderColor: '#334155',
-    borderWidth: 1,
-    borderRadius: 6,
-    marginVertical: 8,
-  },
-  th: {
-    backgroundColor: '#1e293b',
-    padding: 8,
-    borderColor: '#334155',
-    borderWidth: 0.5,
-    color: '#f8fafc',
-    fontWeight: '700',
-  },
-  td: {
-    padding: 8,
-    borderColor: '#334155',
-    borderWidth: 0.5,
-    color: '#e2e8f0',
-  },
-  hr: {
-    backgroundColor: '#334155',
-    height: 1,
-    marginVertical: 12,
-  },
-  strong: {
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  em: {
-    fontStyle: 'italic',
-    color: '#cbd5e1',
-  },
-});
+// ----------------- ESTILOS SHADCN DARK OBSIDIAN -----------------
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: '#09090b',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 14,
-    backgroundColor: '#131d2e',
+    paddingTop: Platform.OS === 'ios' ? 52 : 38,
+    paddingBottom: 12,
+    backgroundColor: '#0d1117',
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: '#27272a',
   },
   backBtn: {
-    padding: 6,
-    marginRight: 8,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    marginRight: 10,
   },
   headerTitleWrap: {
     flex: 1,
   },
   headerTitle: {
-    color: '#f8fafc',
+    color: '#fafafa',
     fontSize: 16,
     fontWeight: '700',
   },
@@ -556,172 +767,330 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   headerSubText: {
-    color: '#38bdf8',
-    fontSize: 11,
-    fontWeight: '500',
+    color: '#a1a1aa',
+    fontSize: 12,
+    maxWidth: 150,
+  },
+  activePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#064e3b',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 8,
+  },
+  activeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#34d399',
+    marginRight: 4,
+  },
+  activePillText: {
+    color: '#6ee7b7',
+    fontSize: 10,
+    fontWeight: '600',
   },
   artifactsBtn: {
     position: 'relative',
     padding: 8,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    backgroundColor: '#18181b',
     borderRadius: 8,
-    marginLeft: 8,
+    borderWidth: 1,
+    borderColor: '#27272a',
   },
   artifactsBadge: {
     position: 'absolute',
-    top: -2,
-    right: -2,
+    top: -4,
+    right: -4,
     backgroundColor: '#0284c7',
     borderRadius: 10,
-    minWidth: 16,
-    height: 16,
-    alignItems: 'center',
+    width: 18,
+    height: 18,
     justifyContent: 'center',
-    paddingHorizontal: 4,
+    alignItems: 'center',
   },
   artifactsBadgeText: {
     color: '#ffffff',
-    fontSize: 9,
-    fontWeight: '800',
+    fontSize: 10,
+    fontWeight: '700',
   },
   messagesList: {
-    padding: 16,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+  },
+  loadMoreBtn: {
+    alignSelf: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 20,
+    marginBottom: 14,
+  },
+  loadMoreText: {
+    color: '#a1a1aa',
+    fontSize: 12,
   },
   userBubble: {
     alignSelf: 'flex-end',
-    backgroundColor: '#0284c7',
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
     borderRadius: 16,
     borderBottomRightRadius: 4,
-    padding: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     maxWidth: '85%',
-    marginBottom: 12,
+    marginVertical: 4,
   },
   userText: {
-    color: '#ffffff',
-    fontSize: 14,
-    lineHeight: 20,
+    color: '#f8fafc',
+    fontSize: 15,
+    lineHeight: 22,
   },
-  plannerCard: {
-    backgroundColor: '#131d2e',
-    borderRadius: 12,
-    padding: 10,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#1e293b',
+  userMediaContainer: {
+    marginBottom: 8,
   },
-  thoughtHeader: {
+  userMediaImage: {
+    width: 200,
+    height: 150,
+    borderRadius: 10,
+  },
+  timelineItem: {
+    marginVertical: 2,
+    paddingLeft: 6,
+  },
+  thoughtAccordionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 2,
+    paddingVertical: 4,
   },
-  thoughtTitle: {
-    flex: 1,
-    color: '#94a3b8',
+  thoughtLabelText: {
+    color: '#64748b',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  thoughtExpandedBox: {
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    borderRadius: 8,
+    padding: 10,
+    marginVertical: 4,
+  },
+  toolAccordionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  toolIconWrap: {
+    marginRight: 6,
+    width: 18,
+    alignItems: 'center',
+  },
+  badgeEmoji: {
     fontSize: 12,
+  },
+  badgeTextSmall: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  toolTitleText: {
+    color: '#94a3b8',
+    fontSize: 13,
+    flex: 1,
+  },
+  toolDetailBox: {
+    backgroundColor: '#090d16',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    borderRadius: 8,
+    padding: 8,
+    marginVertical: 4,
+  },
+  toolDetailText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  workingCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingLeft: 8,
+  },
+  workingPulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#38bdf8',
+    marginRight: 8,
+  },
+  workingText: {
+    color: '#94a3b8',
+    fontSize: 13,
     fontWeight: '600',
   },
-  thoughtBody: {
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#1e293b',
-  },
-  thoughtText: {
-    color: '#64748b',
-    fontSize: 12,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    lineHeight: 18,
-  },
-  toolsContainer: {
-    marginTop: 6,
-  },
-  toolChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  assistantCard: {
     backgroundColor: '#0f172a',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 6,
-    marginTop: 4,
     borderWidth: 1,
     borderColor: '#1e293b',
+    borderRadius: 14,
+    padding: 14,
+    marginVertical: 8,
   },
-  toolName: {
-    color: '#34d399',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  toolSummary: {
-    color: '#94a3b8',
-    fontSize: 11,
-    marginLeft: 6,
-    flex: 1,
-  },
-  assistantBubble: {
-    backgroundColor: '#131d2e',
-    borderRadius: 16,
-    borderBottomLeftRadius: 4,
-    padding: 16,
-    maxWidth: '92%',
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#1e293b',
-  },
-  assistantHeader: {
+  assistantCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+    paddingBottom: 6,
   },
-  assistantAvatarImg: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
+  assistantAvatar: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
     marginRight: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
   },
   assistantName: {
-    flex: 1,
     color: '#38bdf8',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
+    flex: 1,
   },
   copyBtn: {
     padding: 4,
   },
-  scrollBottomBtn: {
-    position: 'absolute',
-    bottom: 120,
-    right: 20,
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#0284c7',
+  questionCard: {
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#f59e0b',
+    borderRadius: 12,
+    padding: 14,
+    marginVertical: 8,
+  },
+  questionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  questionTitle: {
+    color: '#f59e0b',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  questionBody: {
+    marginTop: 4,
+  },
+  questionPrompt: {
+    color: '#fafafa',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 10,
+  },
+  optionsWrap: {
+    gap: 8,
+  },
+  optionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#27272a',
+    borderWidth: 1,
+    borderColor: '#3f3f46',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  optionBtnSelected: {
+    borderColor: '#38bdf8',
+    backgroundColor: '#082f49',
+  },
+  optionText: {
+    color: '#e4e4e7',
+    fontSize: 13,
+    flex: 1,
+  },
+  optionTextSelected: {
+    color: '#38bdf8',
+    fontWeight: '600',
+  },
+  customAnswerInput: {
+    backgroundColor: '#27272a',
+    borderWidth: 1,
+    borderColor: '#3f3f46',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: '#fafafa',
+    fontSize: 13,
+    marginTop: 10,
+  },
+  submitAnswerBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
+    backgroundColor: '#0284c7',
+    borderRadius: 8,
+    paddingVertical: 10,
+    marginTop: 10,
+  },
+  submitAnswerBtnDisabled: {
+    opacity: 0.5,
+  },
+  submitAnswerBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  imagePreviewWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 10,
+    padding: 8,
+    marginHorizontal: 14,
+    marginBottom: 6,
+  },
+  imagePreviewThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+  },
+  imagePreviewTitle: {
+    color: '#fafafa',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  imagePreviewSub: {
+    color: '#34d399',
+    fontSize: 11,
+  },
+  removeImageBtn: {
+    padding: 6,
   },
   slashCommandsBar: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    backgroundColor: '#0b0f19',
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    gap: 8,
   },
   slashChip: {
-    backgroundColor: '#131d2e',
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 14,
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 12,
-    marginRight: 6,
-    borderWidth: 1,
-    borderColor: '#1e293b',
   },
   slashChipText: {
-    color: '#38bdf8',
+    color: '#a1a1aa',
     fontSize: 11,
     fontWeight: '600',
   },
@@ -729,34 +1098,161 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: '#131d2e',
+    paddingVertical: 8,
+    backgroundColor: '#0d1117',
     borderTopWidth: 1,
-    borderTopColor: '#1e293b',
+    borderTopColor: '#27272a',
+  },
+  attachBtn: {
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    marginRight: 8,
   },
   input: {
     flex: 1,
-    backgroundColor: '#0f172a',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    minHeight: 40,
     maxHeight: 120,
-    color: '#f8fafc',
-    fontSize: 14,
+    backgroundColor: '#18181b',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#27272a',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    color: '#fafafa',
+    fontSize: 14,
   },
   sendBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    padding: 10,
     backgroundColor: '#0284c7',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: 10,
     marginLeft: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   sendBtnDisabled: {
-    backgroundColor: '#334155',
-    opacity: 0.5,
+    opacity: 0.4,
+  },
+  scrollBottomBtn: {
+    position: 'absolute',
+    bottom: 95,
+    right: 20,
+    backgroundColor: '#0284c7',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'flex-end',
+  },
+  pickerModalContent: {
+    backgroundColor: '#18181b',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#27272a',
+  },
+  pickerModalTitle: {
+    color: '#fafafa',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 16,
+  },
+  pickerOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#27272a',
+  },
+  pickerOptionText: {
+    color: '#fafafa',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+});
+
+const markdownStyles = StyleSheet.create({
+  body: {
+    color: '#e2e8f0',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  heading1: {
+    color: '#38bdf8',
+    fontSize: 19,
+    fontWeight: '700',
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  heading2: {
+    color: '#60a5fa',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  heading3: {
+    color: '#93c5fd',
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 6,
+    marginBottom: 2,
+  },
+  code_inline: {
+    backgroundColor: '#1e293b',
+    color: '#38bdf8',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  code_block: {
+    backgroundColor: '#020617',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    borderRadius: 8,
+    padding: 10,
+    marginVertical: 6,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    color: '#38bdf8',
+    fontSize: 12,
+  },
+  blockquote: {
+    backgroundColor: '#0c1a2e',
+    borderLeftColor: '#38bdf8',
+    borderLeftWidth: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginVertical: 4,
+  },
+  link: {
+    color: '#38bdf8',
+    textDecorationLine: 'underline',
+  },
+});
+
+const thoughtMarkdownStyles = StyleSheet.create({
+  body: {
+    color: '#94a3b8',
+    fontSize: 12,
+    lineHeight: 18,
+    fontStyle: 'italic',
+  },
+  code_inline: {
+    backgroundColor: '#1e293b',
+    color: '#cbd5e1',
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    fontSize: 11,
   },
 });

@@ -14,10 +14,27 @@ export interface Conversation {
   last_user_input_time?: string;
 }
 
+export interface QuestionItem {
+  question: string;
+  options: string[];
+  is_multi_select?: boolean;
+}
+
 export interface ToolCall {
   name: string;
-  args: Record<string, any>;
+  title?: string;
+  icon?: string;
+  detail?: string;
+  args?: Record<string, any>;
   status?: string;
+  questions?: QuestionItem[];
+}
+
+export interface MediaItem {
+  mime_type: string;
+  filename: string;
+  url?: string;
+  local_uri?: string;
 }
 
 export interface Message {
@@ -26,8 +43,12 @@ export interface Message {
   created_at: string;
   content?: string;
   thinking?: string;
+  thought_duration?: string;
+  thought_label?: string;
+  tool_call?: ToolCall;
   tool_calls?: ToolCall[];
-  type: 'user_message' | 'planner_response' | 'assistant_message';
+  media?: MediaItem[];
+  type: 'user_message' | 'planner_response' | 'assistant_message' | 'thought_step' | 'tool_step';
 }
 
 export interface Artifact {

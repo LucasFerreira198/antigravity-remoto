@@ -12,6 +12,7 @@ import {
 import { MessageSquare, Plus, Search, Folder, Clock, Layers, X, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
+import { StorageService } from '../services/storage';
 import { Conversation, Project } from '../types';
 
 interface ConversationsScreenProps {
@@ -36,7 +37,6 @@ export default function ConversationsScreen({
 
   const loadData = async (refresh: boolean = false) => {
     if (refresh) setIsRefreshing(true);
-    else setIsLoading(true);
 
     try {
       const [convosData, projectsData] = await Promise.all([
@@ -45,8 +45,9 @@ export default function ConversationsScreen({
       ]);
       setConversations(convosData);
       setProjects(projectsData);
+      StorageService.saveConversationsCache(convosData);
     } catch (e) {
-      console.error('Erro ao carregar conversas:', e);
+      console.warn('Erro ao carregar conversas:', e);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -54,7 +55,15 @@ export default function ConversationsScreen({
   };
 
   useEffect(() => {
-    loadData();
+    // Carregar cache local de conversas imediatamente (0ms)
+    StorageService.getConversationsCache().then((cached) => {
+      if (cached && cached.length > 0) {
+        setConversations(cached);
+        setIsLoading(false);
+      }
+    });
+
+    loadData(false);
   }, []);
 
   const filteredConversations = useMemo(() => {

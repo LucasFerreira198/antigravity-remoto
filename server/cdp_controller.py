@@ -41,8 +41,8 @@ class CDPController:
         ws_url = await self.get_page_ws_url(port)
         return bool(ws_url)
 
-    async def send_message_to_desktop(self, conversation_id: str, prompt: str) -> bool:
-        """Digita e envia a mensagem diretamente na janela ativa do Antigravity no PC."""
+    async def send_message_to_desktop(self, conversation_id: str, prompt: str, file_path: Optional[str] = None) -> bool:
+        """Digita e envia a mensagem diretamente na janela ativa do Antigravity no PC, com suporte a anexo de arquivo."""
         port = self.get_devtools_port()
         if not port:
             return False
@@ -52,7 +52,14 @@ class CDPController:
             return False
 
         try:
-            async with websockets.connect(ws_url, close_timeout=3) as ws:
+            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, close_timeout=5) as ws:
+                async def cdp_call(method, params=None, msg_id=1):
+                    await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+                    while True:
+                        msg = json.loads(await ws.recv())
+                        if msg.get("id") == msg_id:
+                            return msg
+
                 # 1. Trocar para a conversa desejada se a tela estiver em outra
                 nav_expr = f"""
                 (() => {{
@@ -69,13 +76,28 @@ class CDPController:
                     return 'already_here';
                 }})()
                 """
-                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": nav_expr, "returnByValue": True}}))
-                res1 = json.loads(await ws.recv())
+                res1 = await cdp_call("Runtime.evaluate", {"expression": nav_expr, "returnByValue": True}, msg_id=1)
                 nav_result = res1.get("result", {}).get("result", {}).get("value")
                 if nav_result in ("clicked_link", "navigated_url"):
                     await asyncio.sleep(0.8)
 
-                # 2. Focar o campo de texto e inserir o conteúdo
+                # 2. Se houver anexo de imagem / arquivo, injetar no input file
+                if file_path and Path(file_path).exists():
+                    try:
+                        await cdp_call("DOM.enable", {}, msg_id=10)
+                        doc_res = await cdp_call("DOM.getDocument", {"depth": -1}, msg_id=11)
+                        root_id = doc_res.get("result", {}).get("root", {}).get("nodeId")
+                        if root_id:
+                            q_res = await cdp_call("DOM.querySelector", {"nodeId": root_id, "selector": 'input[type="file"]'}, msg_id=12)
+                            file_node_id = q_res.get("result", {}).get("nodeId")
+                            if file_node_id:
+                                abs_p = str(Path(file_path).resolve())
+                                await cdp_call("DOM.setFileInputFiles", {"files": [abs_p], "nodeId": file_node_id}, msg_id=13)
+                                await asyncio.sleep(0.5)
+                    except Exception as e:
+                        print(f"[CDP] Erro ao injetar arquivo: {e}")
+
+                # 3. Focar o campo de texto e inserir o conteúdo
                 safe_prompt = json.dumps(prompt)
                 focus_insert_expr = f"""
                 (() => {{
@@ -89,22 +111,16 @@ class CDPController:
                     return true;
                 }})()
                 """
-                await ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": focus_insert_expr, "returnByValue": True}}))
-                res2 = json.loads(await ws.recv())
+                res2 = await cdp_call("Runtime.evaluate", {"expression": focus_insert_expr, "returnByValue": True}, msg_id=2)
                 inserted = res2.get("result", {}).get("result", {}).get("value")
 
                 if not inserted:
                     # Fallback para Input.insertText via CDP
-                    await ws.send(json.dumps({
-                        "id": 3,
-                        "method": "Input.insertText",
-                        "params": {"text": prompt}
-                    }))
-                    await ws.recv()
+                    await cdp_call("Input.insertText", {"text": prompt}, msg_id=3)
 
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)
 
-                # 3. Enviar mensagem (clicar no botão Send ou disparar tecla Enter)
+                # 4. Enviar mensagem (clicar no botão Send ou disparar tecla Enter)
                 submit_expr = """
                 (() => {
                     const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"], button[aria-label^="Send"]');
@@ -128,46 +144,34 @@ class CDPController:
                     return 'none';
                 })()
                 """
-                await ws.send(json.dumps({"id": 4, "method": "Runtime.evaluate", "params": {"expression": submit_expr, "returnByValue": True}}))
-                res4 = json.loads(await ws.recv())
+                res4 = await cdp_call("Runtime.evaluate", {"expression": submit_expr, "returnByValue": True}, msg_id=4)
                 sub_res = res4.get("result", {}).get("result", {}).get("value")
 
                 if sub_res == 'none':
                     # Fallback para tecla Enter via eventos de teclado CDP
-                    await ws.send(json.dumps({
-                        "id": 5,
-                        "method": "Input.dispatchKeyEvent",
-                        "params": {
-                            "type": "keyDown",
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13,
-                            "text": "\r"
-                        }
-                    }))
-                    await ws.recv()
-                    await ws.send(json.dumps({
-                        "id": 6,
-                        "method": "Input.dispatchKeyEvent",
-                        "params": {
-                            "type": "keyUp",
-                            "key": "Enter",
-                            "code": "Enter",
-                            "windowsVirtualKeyCode": 13,
-                            "nativeVirtualKeyCode": 13
-                        }
-                    }))
-                    await ws.recv()
+                    await cdp_call("Input.dispatchKeyEvent", {
+                        "type": "keyDown",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13,
+                        "text": "\r"
+                    }, msg_id=5)
+                    await cdp_call("Input.dispatchKeyEvent", {
+                        "type": "keyUp",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13
+                    }, msg_id=6)
 
-                print(f"[CDP] Mensagem enviada com sucesso para conversa {conversation_id} no PC (resultado: {sub_res})!")
                 return True
         except Exception as e:
-            print(f"[CDP] Erro ao enviar mensagem via CDP: {e}")
+            print(f"[CDP Controller] Erro ao enviar mensagem para desktop: {e}")
             return False
 
     async def create_conversation_on_desktop(self, prompt: str, project_id: Optional[str] = None) -> Optional[str]:
-        """Inicia uma nova conversa na interface do Antigravity no PC."""
+        """Cria nova conversa na janela do PC clicando em 'New Conversation' ou navegando para '/'."""
         port = self.get_devtools_port()
         if not port:
             return None
@@ -177,58 +181,61 @@ class CDPController:
             return None
 
         try:
-            async with websockets.connect(ws_url, close_timeout=3) as ws:
-                # 1. Clicar em New Conversation
-                nav_expr = """
+            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, close_timeout=5) as ws:
+                async def cdp_call(method, params=None, msg_id=1):
+                    await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+                    while True:
+                        msg = json.loads(await ws.recv())
+                        if msg.get("id") == msg_id:
+                            return msg
+
+                # 1. Clicar em novo chat ou navegar para a home
+                new_chat_expr = """
                 (() => {
-                    const btn = document.querySelector('button[aria-label="New Conversation"], a[href="/"]');
-                    if (btn) {
-                        btn.click();
-                        return true;
+                    const newBtn = document.querySelector('button[aria-label="New Conversation"], a[href="/"], button[data-testid="new-conversation-button"]');
+                    if (newBtn) {
+                        newBtn.click();
+                        return 'clicked_new';
+                    } else {
+                        window.location.href = '/';
+                        return 'navigated_root';
                     }
-                    window.location.href = '/';
-                    return true;
                 })()
                 """
-                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": nav_expr, "returnByValue": True}}))
-                await ws.recv()
-                await asyncio.sleep(0.7)
+                await cdp_call("Runtime.evaluate", {"expression": new_chat_expr, "returnByValue": True}, msg_id=1)
+                await asyncio.sleep(1.0)
 
-                # 2. Inserir texto e submeter
+                # 2. Digitar e enviar o prompt
                 safe_prompt = json.dumps(prompt)
-                focus_insert_submit = f"""
+                type_expr = f"""
                 (() => {{
                     const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
                     if (!el) return false;
                     el.focus();
-                    document.execCommand('selectAll', false, null);
                     document.execCommand('insertText', false, {safe_prompt});
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    
                     setTimeout(() => {{
-                        const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"], button[aria-label^="Send"]');
-                        if (btn && !btn.disabled) {{
-                            btn.click();
-                        }}
-                    }}, 200);
+                        const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"]');
+                        if (btn) btn.click();
+                    }}, 300);
                     return true;
                 }})()
                 """
-                await ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": focus_insert_submit, "returnByValue": True}}))
-                await ws.recv()
-                await asyncio.sleep(1.2)
+                await cdp_call("Runtime.evaluate", {"expression": type_expr, "returnByValue": True}, msg_id=2)
+                await asyncio.sleep(1.5)
 
-                # 3. Ler o novo URL da conversa gerada
-                await ws.send(json.dumps({"id": 3, "method": "Runtime.evaluate", "params": {"expression": "window.location.pathname", "returnByValue": True}}))
-                res3 = json.loads(await ws.recv())
-                path = res3.get("result", {}).get("result", {}).get("value", "")
-                if "/c/" in path:
-                    new_cid = path.split("/c/")[1].split("?")[0]
-                    print(f"[CDP] Nova conversa iniciada no PC: {new_cid}")
-                    return new_cid
+                # 3. Ler o novo conversation_id da URL atual
+                url_expr = "window.location.pathname"
+                url_res = await cdp_call("Runtime.evaluate", {"expression": url_expr, "returnByValue": True}, msg_id=3)
+                pathname = url_res.get("result", {}).get("result", {}).get("value", "")
+                if "/c/" in pathname:
+                    new_id = pathname.split("/c/")[-1].split("/")[0].split("?")[0]
+                    return new_id
                 return None
         except Exception as e:
-            print(f"[CDP] Erro ao criar conversa via CDP: {e}")
+            print(f"[CDP Controller] Erro ao criar conversa no desktop: {e}")
             return None
 
 cdp_controller = CDPController()

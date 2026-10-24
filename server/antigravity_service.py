@@ -100,8 +100,82 @@ class AntigravityService:
         finally:
             conn.close()
 
+    def format_tool_call(self, tc: Dict[str, Any]) -> Dict[str, Any]:
+        """Formata ferramentas executadas com ícones visuais e descrições idênticas ao desktop."""
+        name = tc.get("name", "Tool")
+        args = tc.get("args", {})
+        summary = args.get("toolSummary") or args.get("CommandLine") or name
+
+        icon = "doc"
+        title = name
+        detail = ""
+
+        if name == "read_file":
+            path_str = str(args.get("Path", ""))
+            basename = Path(path_str).name or path_str
+            start_l = args.get("StartLine")
+            end_l = args.get("EndLine")
+            ext = Path(path_str).suffix.lower()
+            badge = "📄"
+            icon = "doc"
+            if ext == ".py":
+                badge = "🐍"
+                icon = "python"
+            elif ext in [".tsx", ".jsx"]:
+                badge = "⚛"
+                icon = "react"
+            elif ext in [".ts", ".js"]:
+                badge = "TS"
+                icon = "typescript"
+
+            if start_l and end_l:
+                title = f"Analyzed {badge} {basename} #L{start_l}-{end_l}"
+            elif start_l:
+                title = f"Analyzed {badge} {basename} #L{start_l}"
+            else:
+                title = f"Reading {badge} {basename}"
+            detail = path_str
+        elif name in ["run_command"]:
+            icon = "terminal"
+            cmd = str(args.get("CommandLine", ""))
+            tool_sum = args.get("toolSummary")
+            if tool_sum:
+                title = f"Ran {tool_sum}"
+            else:
+                title = f"Ran {cmd[:30]}..." if len(cmd) > 30 else f"Ran {cmd}"
+            detail = cmd
+        elif name in ["edit_file", "write_file"]:
+            path_str = str(args.get("Path", ""))
+            basename = Path(path_str).name or path_str
+            ext = Path(path_str).suffix.lower()
+            badge = "🐍" if ext == ".py" else ("⚛" if ext in [".tsx", ".jsx"] else ("TS" if ext in [".ts", ".js"] else "📄"))
+            action = "Edited" if name == "edit_file" else "Created"
+            title = f"{action} {badge} {basename}"
+            detail = path_str
+        elif name == "search_web":
+            icon = "search"
+            q = str(args.get("query", ""))
+            title = f"Searched {q[:35]}"
+            detail = q
+        elif name == "ask_question":
+            icon = "question"
+            title = "Pergunta do Antigravity"
+            detail = "Escolha uma opção para responder"
+        else:
+            title = str(summary)[:60]
+            detail = json.dumps(args)[:200]
+
+        return {
+            "name": name,
+            "title": title,
+            "icon": icon,
+            "detail": detail,
+            "args": args,
+            "questions": args.get("questions") if name == "ask_question" else None
+        }
+
     def get_conversation_transcript(self, conversation_id: str) -> Dict[str, Any]:
-        """Lê os passos da conversa a partir do arquivo transcript.jsonl / transcript_full.jsonl de forma limpa."""
+        """Lê os passos da conversa a partir do arquivo transcript.jsonl / transcript_full.jsonl de forma rápida e completa."""
         brain_dir = self.paths.BRAIN_DIR / conversation_id
         logs_dir = brain_dir / ".system_generated" / "logs"
         transcript_file = logs_dir / "transcript_full.jsonl"
@@ -109,68 +183,100 @@ class AntigravityService:
             transcript_file = logs_dir / "transcript.jsonl"
         
         messages = []
+        is_active = False
         if transcript_file.exists():
             try:
+                # Verificar se o arquivo foi modificado nos últimos 20 segundos
+                mtime = transcript_file.stat().st_mtime
+                if (datetime.datetime.now().timestamp() - mtime) < 20:
+                    is_active = True
+
                 with open(transcript_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            step = json.loads(line)
-                            step_type = step.get("type")
-                            source = step.get("source")
+                    all_lines = f.readlines()
+                    # Ler até as últimas 150 linhas para resposta instantânea no mobile
+                    target_lines = all_lines[-150:] if len(all_lines) > 150 else all_lines
+
+                prev_time = None
+                for line in target_lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        step = json.loads(line)
+                        step_type = step.get("type")
+                        created_at = step.get("created_at")
+
+                        duration_s = 5
+                        if created_at and prev_time:
+                            try:
+                                t1 = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                                t0 = datetime.datetime.fromisoformat(prev_time.replace("Z", "+00:00"))
+                                duration_s = max(1, int((t1 - t0).total_seconds()))
+                            except Exception:
+                                pass
+                        prev_time = created_at
+                        
+                        if step_type == "USER_INPUT":
+                            raw_content = step.get("content", "")
+                            clean_text = self.clean_message_content(raw_content)
+                            media_list = []
+                            for m in step.get("media", []):
+                                uri_path = m.get("uri", "")
+                                media_list.append({
+                                    "mime_type": m.get("mime_type", "image/png"),
+                                    "filename": Path(uri_path).name,
+                                    "url": f"/api/conversations/{conversation_id}/media/{Path(uri_path).name}"
+                                })
+                            if clean_text or media_list:
+                                messages.append({
+                                    "role": "user",
+                                    "step_index": step.get("step_index", 0),
+                                    "created_at": created_at,
+                                    "content": clean_text,
+                                    "media": media_list,
+                                    "type": "user_message"
+                                })
+                        elif step_type == "PLANNER_RESPONSE":
+                            content = step.get("content", "")
+                            thinking = step.get("thinking", "")
+                            tool_calls = step.get("tool_calls", [])
                             
-                            if step_type == "USER_INPUT":
-                                raw_content = step.get("content", "")
-                                clean_text = self.clean_message_content(raw_content)
-                                if clean_text:
-                                    messages.append({
-                                        "role": "user",
-                                        "step_index": step.get("step_index", 0),
-                                        "created_at": step.get("created_at"),
-                                        "content": clean_text,
-                                        "type": "user_message"
-                                    })
-                            elif step_type == "PLANNER_RESPONSE":
-                                content = step.get("content", "")
-                                thinking = step.get("thinking", "")
-                                tool_calls = step.get("tool_calls", [])
-                                
-                                # Se o modelo gerou resposta visível para o usuário
-                                if content and content.strip():
+                            # 1. Raciocínio interno (Thought for Xs)
+                            if thinking and thinking.strip():
+                                messages.append({
+                                    "role": "assistant",
+                                    "step_index": step.get("step_index", 0),
+                                    "created_at": created_at,
+                                    "thinking": thinking.strip(),
+                                    "thought_duration": f"{duration_s}s",
+                                    "thought_label": f"Thought for {duration_s}s",
+                                    "type": "thought_step"
+                                })
+
+                            # 2. Chamadas de ferramentas com badges
+                            if tool_calls:
+                                for tc in tool_calls:
+                                    formatted_tc = self.format_tool_call(tc)
                                     messages.append({
                                         "role": "assistant",
                                         "step_index": step.get("step_index", 0),
-                                        "created_at": step.get("created_at"),
-                                        "content": content.strip(),
-                                        "type": "assistant_message"
+                                        "created_at": created_at,
+                                        "tool_call": formatted_tc,
+                                        "type": "tool_step"
                                     })
-                                # Se foi apenas raciocínio interno ou execução de comandos
-                                elif thinking or tool_calls:
-                                    safe_tools = []
-                                    for tc in tool_calls:
-                                        args = tc.get("args", {})
-                                        summary = args.get("toolSummary") or args.get("CommandLine") or tc.get("name")
-                                        safe_tools.append({
-                                            "name": tc.get("name", "Tool"),
-                                            "summary": str(summary).replace('"', '')[:120],
-                                            "args": {
-                                                "toolSummary": str(args.get("toolSummary", "")).replace('"', ''),
-                                                "CommandLine": str(args.get("CommandLine", "")).replace('"', '')[:120] if args.get("CommandLine") else ""
-                                            }
-                                        })
-                                    messages.append({
-                                        "role": "assistant",
-                                        "step_index": step.get("step_index", 0),
-                                        "created_at": step.get("created_at"),
-                                        "thinking": thinking if len(thinking) < 2000 else thinking[:2000] + "...",
-                                        "tool_calls": safe_tools,
-                                        "type": "planner_response"
-                                    })
-                            # GENERIC: Saídas brutas de ferramentas (não exibir como mensagens no chat)
-                        except json.JSONDecodeError:
-                            continue
+
+                            # 3. Resposta textual final
+                            if content and content.strip():
+                                messages.append({
+                                    "role": "assistant",
+                                    "step_index": step.get("step_index", 0),
+                                    "created_at": created_at,
+                                    "content": content.strip(),
+                                    "type": "assistant_message"
+                                })
+                        # GENERIC: Saídas brutas de ferramentas não geram balões soltos
+                    except json.JSONDecodeError:
+                        continue
             except Exception as e:
                 print(f"Erro ao ler transcrição: {e}")
 
@@ -179,7 +285,8 @@ class AntigravityService:
         return {
             "conversation_id": conversation_id,
             "messages": messages,
-            "artifacts": artifacts
+            "artifacts": artifacts,
+            "is_active": is_active
         }
 
     def list_artifacts(self, conversation_id: str) -> List[Dict[str, Any]]:

@@ -30,6 +30,8 @@ main_loop: Optional[asyncio.AbstractEventLoop] = None
 class SendMessageRequest(BaseModel):
     prompt: str
     title: Optional[str] = None
+    image_base64: Optional[str] = None
+    image_filename: Optional[str] = None
 
 class NewConversationRequest(BaseModel):
     prompt: str
@@ -224,15 +226,31 @@ async def create_conversation(req: NewConversationRequest):
 
 @app.post("/api/conversations/{conversation_id}/messages", dependencies=[Depends(verify_token)])
 async def send_message(conversation_id: str, req: SendMessageRequest):
-    """Envia mensagem para a conversa: via CDP na interface do PC ou fallback para agy.exe."""
+    """Envia mensagem para a conversa: via CDP na interface do PC ou fallback para agy.exe, com suporte a imagem."""
+    file_path = None
+    if req.image_base64:
+        try:
+            import base64, time
+            brain_uploads = service.paths.BRAIN_DIR / conversation_id / ".user_uploaded"
+            brain_uploads.mkdir(parents=True, exist_ok=True)
+            ext = ".png"
+            if req.image_filename and "." in req.image_filename:
+                ext = Path(req.image_filename).suffix
+            saved_file = brain_uploads / f"media_{int(time.time() * 1000)}{ext}"
+            saved_file.write_bytes(base64.b64decode(req.image_base64))
+            file_path = str(saved_file.resolve())
+        except Exception as e:
+            print(f"Erro ao salvar imagem anexada: {e}")
+
     # 1. Enviar diretamente para a janela do PC via CDP (executa na tela do PC)
     if await cdp_controller.is_desktop_available():
-        success = await cdp_controller.send_message_to_desktop(conversation_id, req.prompt)
+        success = await cdp_controller.send_message_to_desktop(conversation_id, req.prompt, file_path=file_path)
         if success:
             return {
                 "status": "executing_desktop",
                 "conversation_id": conversation_id,
-                "channel": "cdp"
+                "channel": "cdp",
+                "has_attachment": bool(file_path)
             }
 
     # 2. Fallback CLI agy.exe
@@ -256,7 +274,8 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
     return {
         "status": "executing_cli",
         "conversation_id": conversation_id,
-        "channel": "cli"
+        "channel": "cli",
+        "has_attachment": bool(file_path)
     }
 
 @app.get("/api/projects", dependencies=[Depends(verify_token)])
@@ -282,6 +301,26 @@ def get_artifact(conversation_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Artefato não encontrado.")
     return data
 
+@app.get("/api/conversations/{conversation_id}/media/{filename}")
+def get_media_file(conversation_id: str, filename: str):
+    """Serve imagens anexadas na conversa de forma segura."""
+    brain_dir = service.paths.BRAIN_DIR / conversation_id
+    target = brain_dir / ".user_uploaded" / filename
+    if not target.exists():
+        target = brain_dir / filename
+    if not target.exists() or not str(target.resolve()).startswith(str(brain_dir.resolve())):
+        raise HTTPException(status_code=404, detail="Mídia não encontrada.")
+    from fastapi.responses import FileResponse
+    ext = target.suffix.lower()
+    mime = "image/png"
+    if ext in [".jpg", ".jpeg"]:
+        mime = "image/jpeg"
+    elif ext == ".webp":
+        mime = "image/webp"
+    elif ext == ".svg":
+        mime = "image/svg+xml"
+    return FileResponse(str(target), media_type=mime)
+
 # ----------------- WEBSOCKET DE STREAMING -----------------
 
 @app.websocket("/api/conversations/{conversation_id}/stream")
@@ -303,35 +342,42 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
         await websocket.send_text(json.dumps({
             "event": "initial_history",
             "messages": transcript_data["messages"],
-            "artifacts": transcript_data["artifacts"]
+            "artifacts": transcript_data["artifacts"],
+            "is_active": transcript_data.get("is_active", False)
         }))
     except Exception as e:
         print(f"Erro ao enviar histórico inicial: {e}")
 
-    # 2. Tarefa em segundo plano para monitorar o arquivo transcript.jsonl
+    # 2. Monitorar transcript_full.jsonl e transcript.jsonl em tempo real
     brain_dir = service.paths.BRAIN_DIR / conversation_id / ".system_generated" / "logs"
-    transcript_file = brain_dir / "transcript_full.jsonl"
-    if not transcript_file.exists():
-        transcript_file = brain_dir / "transcript.jsonl"
+    file_full = brain_dir / "transcript_full.jsonl"
+    file_std = brain_dir / "transcript.jsonl"
 
-    last_size = transcript_file.stat().st_size if transcript_file.exists() else 0
+    def get_stats():
+        s1 = file_full.stat().st_size if file_full.exists() else 0
+        m1 = file_full.stat().st_mtime if file_full.exists() else 0
+        s2 = file_std.stat().st_size if file_std.exists() else 0
+        m2 = file_std.stat().st_mtime if file_std.exists() else 0
+        return (s1, m1, s2, m2)
+
+    last_stats = get_stats()
     stop_event = asyncio.Event()
 
     async def watch_transcript_loop():
-        nonlocal last_size
+        nonlocal last_stats
         while not stop_event.is_set():
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
             try:
-                if transcript_file.exists():
-                    current_size = transcript_file.stat().st_size
-                    if current_size != last_size:
-                        last_size = current_size
-                        fresh_data = service.get_conversation_transcript(conversation_id)
-                        await websocket.send_text(json.dumps({
-                            "event": "transcript_updated",
-                            "messages": fresh_data["messages"],
-                            "artifacts": fresh_data["artifacts"]
-                        }))
+                curr_stats = get_stats()
+                if curr_stats != last_stats:
+                    last_stats = curr_stats
+                    fresh_data = service.get_conversation_transcript(conversation_id)
+                    await websocket.send_text(json.dumps({
+                        "event": "transcript_updated",
+                        "messages": fresh_data["messages"],
+                        "artifacts": fresh_data["artifacts"],
+                        "is_active": fresh_data.get("is_active", False)
+                    }))
             except Exception:
                 pass
 
@@ -339,8 +385,13 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
 
     try:
         while True:
-            # Manter socket aberto aguardando pings ou desconexão
-            await websocket.receive_text()
+            text = await websocket.receive_text()
+            try:
+                msg = json.loads(text)
+                if msg.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+            except Exception:
+                pass
     except (WebSocketDisconnect, Exception):
         pass
     finally:

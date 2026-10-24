@@ -88,15 +88,25 @@ class ApiService {
     return this.request<Conversation[]>(endpoint);
   }
 
-  async getConversation(id: string): Promise<{ conversation_id: string; messages: Message[]; artifacts: Artifact[] }> {
+  async getConversation(id: string): Promise<{ conversation_id: string; messages: Message[]; artifacts: Artifact[]; is_active?: boolean }> {
     return this.request(`/api/conversations/${encodeURIComponent(id)}`);
   }
 
-  async sendMessage(id: string, prompt: string, title?: string): Promise<any> {
+  async sendMessage(id: string, prompt: string, title?: string, image?: { base64: string; filename: string }): Promise<any> {
     return this.request(`/api/conversations/${encodeURIComponent(id)}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ prompt, title })
+      body: JSON.stringify({
+        prompt,
+        title,
+        image_base64: image?.base64,
+        image_filename: image?.filename
+      })
     });
+  }
+
+  getMediaUrl(conversationId: string, filename: string): string {
+    if (!this.baseUrl) return '';
+    return `${this.baseUrl}/api/conversations/${encodeURIComponent(conversationId)}/media/${encodeURIComponent(filename)}?token=${encodeURIComponent(this.apiKey)}`;
   }
 
   async newConversation(prompt: string, model?: string, title?: string, projectId?: string): Promise<any> {
