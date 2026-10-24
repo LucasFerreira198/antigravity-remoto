@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -57,6 +57,12 @@ interface ChatScreenProps {
   onOpenArtifacts: (conversationId: string) => void;
 }
 
+interface QueueItem {
+  id: string;
+  content: string;
+  source: 'mobile' | 'pc';
+}
+
 export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: ChatScreenProps) {
   const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -70,8 +76,20 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [displayCount, setDisplayCount] = useState(35);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
+  const [localQueue, setLocalQueue] = useState<QueueItem[]>([]);
+  const [serverQueue, setServerQueue] = useState<QueueItem[]>([]);
   const [desktopPendingText, setDesktopPendingText] = useState<string>('');
+
+  // Fila combinada sem duplicatas (PC e Celular)
+  const combinedQueue = useMemo(() => {
+    const list: QueueItem[] = [...serverQueue];
+    for (const l of localQueue) {
+      if (!list.some((item) => item.content.trim() === l.content.trim())) {
+        list.push(l);
+      }
+    }
+    return list;
+  }, [serverQueue, localQueue]);
 
   // Animação de pulso sutil do indicador Working
   const workingPulse = useRef(new Animated.Value(0.4)).current;
@@ -179,14 +197,32 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           });
           if (fresh.is_active !== undefined) {
             setIsActive(fresh.is_active);
-            if (!fresh.is_active) {
-              setQueuedMessages([]);
-            }
           }
           if (fresh.desktop_pending_text !== undefined) {
             setDesktopPendingText(fresh.desktop_pending_text);
           }
           if (fresh.artifacts) setArtifacts(fresh.artifacts);
+
+          // 1. Remover da fila local mensagens que já foram adicionadas à conversa
+          setLocalQueue((prev) => {
+            if (prev.length === 0) return prev;
+            const userContents = fresh.messages
+              .filter((m) => m.role === 'user')
+              .map((m) => (m.content || '').trim());
+            return prev.filter((item) => !userContents.includes(item.content.trim()));
+          });
+
+          // 2. Sincronizar fila do PC vinda do servidor
+          if (fresh.queued_messages && fresh.queued_messages.length > 0) {
+            const pcItems: QueueItem[] = fresh.queued_messages.map((q) => ({
+              id: q.id,
+              content: q.content,
+              source: 'pc',
+            }));
+            setServerQueue(pcItems);
+          } else {
+            setServerQueue([]);
+          }
         }
       } catch (e) {}
     }, 2500);
@@ -216,6 +252,15 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       }
       if (data.desktop_pending_text !== undefined) {
         setDesktopPendingText(data.desktop_pending_text);
+      }
+      if (data.queued_messages && data.queued_messages.length > 0) {
+        setServerQueue(data.queued_messages.map((q) => ({
+          id: q.id,
+          content: q.content,
+          source: 'pc',
+        })));
+      } else {
+        setServerQueue([]);
       }
       if (scrollAfter) {
         setTimeout(() => {
@@ -263,9 +308,10 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     setSelectedImage(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Se o assistente já estiver trabalhando, registrar na fila visual
+    // Se o assistente já estiver trabalhando, registrar na fila local
     if (isActive) {
-      setQueuedMessages((prev) => [...prev, textToSend]);
+      const qId = Date.now().toString();
+      setLocalQueue((prev) => [...prev, { id: qId, content: textToSend, source: 'mobile' }]);
     }
 
     // Mensagem otimista imediata na tela
@@ -300,7 +346,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             setMessages(fresh.messages);
             if (fresh.artifacts) setArtifacts(fresh.artifacts);
             if (!fresh.is_active) {
-              setQueuedMessages([]);
+              setLocalQueue([]);
               setIsSending(false);
               setIsActive(false);
               clearInterval(pollTimerRef.current);
@@ -311,7 +357,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           clearInterval(pollTimerRef.current);
           setIsSending(false);
           setIsActive(false);
-          setQueuedMessages([]);
+          setLocalQueue([]);
         }
       }, 1000);
 
@@ -426,8 +472,15 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
   // Renderizador de pergunta interativa (ask_question)
   const renderInteractiveQuestion = (toolCall: ToolCall, stepKey: string) => {
-    const questions = toolCall.questions || [];
-    if (questions.length === 0) return null;
+    let questions = toolCall.questions || [];
+    if (typeof questions === 'string') {
+      try {
+        questions = JSON.parse(questions);
+      } catch (e) {
+        questions = [];
+      }
+    }
+    if (!Array.isArray(questions) || questions.length === 0) return null;
 
     return (
       <View style={styles.questionCard}>
@@ -780,27 +833,61 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         </View>
       ) : null}
 
-      {/* Mensagens na Fila de Envio */}
-      {queuedMessages.length > 0 && (
+      {/* Mensagens na Fila de Envio (PC e Celular) */}
+      {combinedQueue.length > 0 && (
         <View style={styles.queuedCard}>
           <View style={styles.queuedHeaderRow}>
             <Clock size={12} color="#f59e0b" style={{ marginRight: 6 }} />
-            <Text style={styles.queuedTitle}>Na fila de envio ({queuedMessages.length})</Text>
+            <Text style={styles.queuedTitle}>Na fila de envio ({combinedQueue.length})</Text>
           </View>
-          {queuedMessages.map((qMsg, qIdx) => (
-            <View key={qIdx} style={styles.queuedItemRow}>
-              <Text style={styles.queuedText} numberOfLines={2}>
-                • {qMsg}
-              </Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setInputPrompt(qMsg);
-                  setQueuedMessages((prev) => prev.filter((_, idx) => idx !== qIdx));
-                }}
-                style={styles.queuedEditBtn}
-              >
-                <Text style={styles.queuedEditText}>Editar</Text>
-              </TouchableOpacity>
+          {combinedQueue.map((item, qIdx) => (
+            <View key={item.id || qIdx} style={styles.queuedItemRow}>
+              <View style={styles.queuedContentWrap}>
+                <View
+                  style={[
+                    styles.sourceBadge,
+                    item.source === 'pc' ? styles.sourceBadgePc : styles.sourceBadgeMobile,
+                  ]}
+                >
+                  <Text style={styles.sourceBadgeText}>
+                    {item.source === 'pc' ? 'PC' : 'Celular'}
+                  </Text>
+                </View>
+                <Text style={styles.queuedText} numberOfLines={2}>
+                  {item.content}
+                </Text>
+              </View>
+              <View style={styles.queuedActionRow}>
+                <TouchableOpacity
+                  style={styles.queuedSendBtn}
+                  onPress={() => {
+                    handleSend(item.content);
+                    setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                    setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
+                  }}
+                >
+                  <Send size={11} color="#ffffff" style={{ marginRight: 4 }} />
+                  <Text style={styles.queuedSendBtnText}>Enviar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.queuedEditBtn}
+                  onPress={() => {
+                    setInputPrompt(item.content);
+                    setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                  }}
+                >
+                  <Text style={styles.queuedEditText}>Editar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.queuedRemoveBtn}
+                  onPress={() => {
+                    setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                    setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
+                  }}
+                >
+                  <X size={13} color="#94a3b8" />
+                </TouchableOpacity>
+              </View>
             </View>
           ))}
         </View>
@@ -1316,7 +1403,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 2,
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  queuedContentWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  sourceBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  sourceBadgePc: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+  },
+  sourceBadgeMobile: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+  },
+  sourceBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#f8fafc',
   },
   queuedText: {
     color: '#cbd5e1',
@@ -1324,17 +1440,37 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     flex: 1,
   },
+  queuedActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  queuedSendBtn: {
+    backgroundColor: '#0284c7',
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  queuedSendBtnText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
   queuedEditBtn: {
     backgroundColor: '#27272a',
     borderRadius: 4,
     paddingHorizontal: 6,
-    paddingVertical: 2,
-    marginLeft: 8,
+    paddingVertical: 3,
   },
   queuedEditText: {
     color: '#f59e0b',
     fontSize: 10,
     fontWeight: '600',
+  },
+  queuedRemoveBtn: {
+    padding: 3,
   },
   slashCommandsBar: {
     flexDirection: 'row',

@@ -184,7 +184,7 @@ export default function ProjectsScreen({ onBack, onSelectProject }: ProjectsScre
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: '#09090b',
   },
   header: {
     flexDirection: 'row',
@@ -193,25 +193,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 14,
-    backgroundColor: '#131d2e',
+    backgroundColor: '#09090b',
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: '#27272a',
   },
   backBtn: {
     padding: 6,
   },
   headerTitle: {
-    color: '#f8fafc',
+    color: '#fafafa',
     fontSize: 17,
     fontWeight: '700',
   },
   addBtn: {
     padding: 8,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
     borderRadius: 8,
   },
   listContent: {
     padding: 16,
+    paddingBottom: 120,
   },
   loadingCenter: {
     flex: 1,
@@ -224,14 +225,14 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   projectCard: {
-    backgroundColor: '#131d2e',
-    borderRadius: 14,
+    backgroundColor: '#141418',
+    borderRadius: 12,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   projectIconWrap: {
     width: 44,

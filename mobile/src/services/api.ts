@@ -88,7 +88,14 @@ class ApiService {
     return this.request<Conversation[]>(endpoint);
   }
 
-  async getConversation(id: string): Promise<{ conversation_id: string; messages: Message[]; artifacts: Artifact[]; is_active?: boolean; desktop_pending_text?: string }> {
+  async getConversation(id: string): Promise<{
+    conversation_id: string;
+    messages: Message[];
+    artifacts: Artifact[];
+    is_active?: boolean;
+    desktop_pending_text?: string;
+    queued_messages?: Array<{ id: string; content: string; sender: string; timestamp: string; source?: string }>;
+  }> {
     return this.request(`/api/conversations/${encodeURIComponent(id)}`);
   }
 

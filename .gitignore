@@ -19,6 +19,7 @@ env/
 
 # Sensitive files
 server_auth.json
+server/last_tunnel_url.txt
 *.keystore
 !mobile/release.keystore
 

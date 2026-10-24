@@ -228,18 +228,6 @@ export default function ConversationsScreen({
         />
       )}
 
-      {/* Botão Flutuante Moderno (Criar Nova Conversa) */}
-      <TouchableOpacity
-        style={styles.fab}
-        activeOpacity={0.85}
-        onPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-          onOpenNewConversation();
-        }}
-      >
-        <Plus size={20} color="#ffffff" style={{ marginRight: 6 }} />
-        <Text style={styles.fabText}>Nova Conversa</Text>
-      </TouchableOpacity>
     </View>
   );
 }
@@ -247,7 +235,7 @@ export default function ConversationsScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: '#09090b',
   },
   searchRow: {
     paddingHorizontal: 16,
@@ -257,12 +245,12 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#111a2e',
-    borderRadius: 12,
+    backgroundColor: '#141418',
+    borderRadius: 10,
     paddingHorizontal: 12,
     height: 42,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   searchIcon: {
     marginRight: 8,
@@ -281,20 +269,20 @@ const styles = StyleSheet.create({
   projectChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#111a2e',
+    backgroundColor: '#141418',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
     marginRight: 8,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   projectChipActive: {
-    backgroundColor: 'rgba(2, 132, 199, 0.18)',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
     borderColor: '#38bdf8',
   },
   projectChipText: {
-    color: '#94a3b8',
+    color: '#a1a1aa',
     fontSize: 12,
     fontWeight: '500',
   },
@@ -305,6 +293,7 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 16,
     paddingTop: 6,
+    paddingBottom: 120,
   },
   loadingCenter: {
     flex: 1,
@@ -326,37 +315,38 @@ const styles = StyleSheet.create({
     width: 68,
     height: 68,
     borderRadius: 20,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.25)',
+    borderColor: 'rgba(56, 189, 248, 0.2)',
   },
   emptyTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: '#fafafa',
     marginBottom: 6,
   },
   emptyDesc: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#71717a',
     textAlign: 'center',
     lineHeight: 18,
   },
   convoCard: {
-    backgroundColor: '#111a2e',
-    borderRadius: 14,
+    backgroundColor: '#141418',
+    borderRadius: 12,
     padding: 14,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   convoCardActive: {
     borderColor: 'rgba(56, 189, 248, 0.5)',
     borderLeftWidth: 3,
     borderLeftColor: '#38bdf8',
+    backgroundColor: '#181924',
   },
   cardHeader: {
     flexDirection: 'row',

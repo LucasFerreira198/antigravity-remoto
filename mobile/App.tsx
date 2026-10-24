@@ -16,6 +16,7 @@ import NewConversationModal from './src/screens/NewConversationModal';
 import ArtifactViewerModal from './src/screens/ArtifactViewerModal';
 import Header from './src/components/Header';
 import UpdateModal from './src/components/UpdateModal';
+import BottomNavBar, { TabKey } from './src/components/BottomNavBar';
 
 type Screen = 'conversations' | 'chat' | 'projects' | 'settings';
 
@@ -165,6 +166,15 @@ export default function App() {
               />
             )}
 
+            {/* Barra de Navegação Inferior (Oculta apenas dentro do Chat) */}
+            {currentScreen !== 'chat' && (
+              <BottomNavBar
+                currentTab={currentScreen}
+                onTabChange={(tab: TabKey) => setCurrentScreen(tab)}
+                onNewConversation={() => setNewConvoModalVisible(true)}
+              />
+            )}
+
             {/* Modal de Nova Conversa */}
             <NewConversationModal
               visible={newConvoModalVisible}
@@ -198,15 +208,16 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: '#09090b',
   },
   splash: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: '#09090b',
     justifyContent: 'center',
     alignItems: 'center',
   },
   mainContent: {
     flex: 1,
+    backgroundColor: '#09090b',
   },
 });

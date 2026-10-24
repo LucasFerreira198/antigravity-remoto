@@ -165,13 +165,24 @@ class AntigravityService:
             title = str(summary)[:60]
             detail = json.dumps(args)[:200]
 
+        questions = None
+        if name == "ask_question":
+            raw_q = args.get("questions")
+            if isinstance(raw_q, str):
+                try:
+                    questions = json.loads(raw_q)
+                except Exception:
+                    questions = []
+            elif isinstance(raw_q, list):
+                questions = raw_q
+
         return {
             "name": name,
             "title": title,
             "icon": icon,
             "detail": detail,
             "args": args,
-            "questions": args.get("questions") if name == "ask_question" else None
+            "questions": questions
         }
 
     def get_conversation_transcript(self, conversation_id: str) -> Dict[str, Any]:
@@ -303,13 +314,53 @@ class AntigravityService:
                 print(f"Erro ao ler transcrição: {e}")
 
         artifacts = self.list_artifacts(conversation_id)
+        queued_messages = self.get_queued_messages(conversation_id)
 
         return {
             "conversation_id": conversation_id,
             "messages": messages,
             "artifacts": artifacts,
-            "is_active": is_active
+            "is_active": is_active,
+            "queued_messages": queued_messages
         }
+
+    def get_queued_messages(self, conversation_id: str) -> List[Dict[str, Any]]:
+        """Lê mensagens na fila de espera do Antigravity (mensagens do PC ainda não processadas)."""
+        brain_dir = self.paths.BRAIN_DIR / conversation_id
+        msg_dir = brain_dir / ".system_generated" / "messages"
+        if not msg_dir.exists():
+            return []
+        read_file = msg_dir / "read.json"
+        read_ids = set()
+        if read_file.exists():
+            try:
+                with open(read_file, "r", encoding="utf-8") as rf:
+                    read_ids = set(json.load(rf).keys())
+            except Exception:
+                pass
+        queued = []
+        for f in sorted(msg_dir.glob("*.json"), key=lambda x: x.stat().st_mtime):
+            if f.name == "read.json":
+                continue
+            if f.stem not in read_ids:
+                try:
+                    with open(f, "r", encoding="utf-8") as mf:
+                        data = json.load(mf)
+                        step_p = data.get("stepPayload", {})
+                        content = step_p.get("content", "")
+                        if content:
+                            clean_c = self.clean_message_content(content)
+                            if clean_c:
+                                queued.append({
+                                    "id": data.get("id", f.stem),
+                                    "content": clean_c,
+                                    "sender": data.get("sender", "user"),
+                                    "timestamp": data.get("timestamp", ""),
+                                    "source": "pc"
+                                })
+                except Exception:
+                    pass
+        return queued
 
     def list_artifacts(self, conversation_id: str) -> List[Dict[str, Any]]:
         """Lista os artefatos gerados na pasta brain da conversa."""

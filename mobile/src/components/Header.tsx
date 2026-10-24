@@ -79,9 +79,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 12,
-    backgroundColor: '#0d1322',
+    backgroundColor: '#09090b',
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: '#27272a',
   },
   titleWrap: {
     flex: 1,
@@ -146,9 +146,9 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#131d2e',
+    backgroundColor: '#141418',
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
 });

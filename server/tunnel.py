@@ -56,6 +56,21 @@ class TunnelManager:
 
     def start_tunnel(self, on_url_ready: Optional[Callable[[str], None]] = None) -> Optional[str]:
         """Inicia o túnel Cloudflare e extrai a URL pública https://*.trycloudflare.com."""
+        url_file = Path(__file__).resolve().parent / "last_tunnel_url.txt"
+        
+        # 1. Verificar se já existe um túnel ativo reutilizável
+        if url_file.exists():
+            try:
+                saved = url_file.read_text().strip()
+                if saved.startswith("https://") and "trycloudflare.com" in saved:
+                    self.public_url = saved
+                    print(f"\n[Tunnel] Reutilizando túnel ativo: {self.public_url}\n")
+                    if on_url_ready:
+                        on_url_ready(self.public_url)
+                    return self.public_url
+            except Exception:
+                pass
+
         if not self.ensure_cloudflared_installed():
             print("[Tunnel] Não foi possível obter o cloudflared. Iniciando apenas em modo rede local.")
             return None
@@ -85,6 +100,10 @@ class TunnelManager:
                 match = url_pattern.search(line)
                 if match and not self.public_url:
                     self.public_url = match.group(0)
+                    try:
+                        url_file.write_text(self.public_url)
+                    except Exception:
+                        pass
                     print(f"\n=======================================================")
                     print(f"🚀 TÚNEL REMOTO ATIVO: {self.public_url}")
                     print(f"=======================================================\n")
