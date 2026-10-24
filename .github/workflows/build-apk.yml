@@ -1,0 +1,110 @@
+name: Build & Release Antigravity Remote APK
+
+on:
+  push:
+    branches: [ main ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Signed Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+          cache: 'gradle'
+
+      - name: Install Mobile Dependencies
+        run: |
+          cd mobile
+          npm install
+
+      - name: Generate Android Native Project (Expo Prebuild)
+        run: |
+          cd mobile
+          npx expo prebuild --platform android --clean
+
+      - name: Configure Keystore & Signing
+        run: |
+          cd mobile
+          if [ -f "release.keystore" ]; then
+            cp release.keystore android/app/release.keystore
+          fi
+          
+          # Injetar configuração de assinatura de release no build.gradle se necessário
+          sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/g' android/app/build.gradle || true
+
+      - name: Build Android Release APK
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          cd mobile/android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Copy & Rename APK
+        run: |
+          mkdir -p build-output
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk build-output/AntigravityRemote-release.apk
+
+      - name: Upload APK as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AntigravityRemote-Signed-APK
+          path: build-output/AntigravityRemote-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Obter Versão do Projeto
+        id: version
+        run: |
+          VERSION=$(node -p "require('./mobile/package.json').version")
+          echo "val=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Publicar Release Oficial com Download Direto do APK
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main' || github.event_name == 'release'
+        with:
+          tag_name: latest
+          name: "Antigravity Remoto v${{ steps.version.outputs.val }} - APK Oficial Android 🚀"
+          body: |
+            ### 📱 Antigravity Remoto v${{ steps.version.outputs.val }} - APK Android Oficial
+            
+            Aplicativo móvel Android oficial (**`.apk`**) para controle remoto completo do **Google Antigravity** rodando no seu computador a partir de qualquer lugar do mundo.
+
+            #### 📥 Download Direto:
+            - **[AntigravityRemote-release.apk](https://github.com/${{ github.repository }}/releases/download/latest/AntigravityRemote-release.apk)**: Toque para baixar e instalar no celular.
+
+            #### ✨ Funcionalidades:
+            - 🌍 **Acesso Remoto Global**: Conecte ao seu PC de qualquer lugar com internet via túnel criptografado TLS (Cloudflare Tunnel).
+            - 📷 **Pareamento Instantâneo por QR Code**: Basta apontar a câmera do celular para o terminal do PC.
+            - 📜 **Histórico Completo de Conversas**: Veja todas as sessões anteriores sincronizadas diretamente do SQLite do Antigravity.
+            - 💬 **Continuidade de Conversas**: Envie mensagens e continue tarefas em andamento.
+            - ⚡ **Streaming em Tempo Real**: Veja pensamentos (*thinking*), ferramentas em execução (*tool calls*) e respostas ao vivo.
+            - 📁 **Criação de Projetos & Novas Conversas**: Crie novos workspaces no seu PC diretamente pelo celular.
+            - ⚙️ **Painel de Configurações**: Altere modelos (Gemini 3.8 Flash / Pro), políticas de auto-execução, sandbox de terminal e modo de artefatos.
+          files: build-output/AntigravityRemote-release.apk
+          prerelease: false
+          overwrite_files: true
+          make_latest: "true"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
