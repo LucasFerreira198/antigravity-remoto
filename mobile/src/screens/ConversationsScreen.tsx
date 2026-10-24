@@ -9,7 +9,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
-import { MessageSquare, Plus, Search, Folder, Clock, Layers, Sparkles } from 'lucide-react-native';
+import { MessageSquare, Plus, Search, Folder, Clock, Layers, X, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
 import { Conversation, Project } from '../types';
@@ -76,18 +76,18 @@ export default function ConversationsScreen({
     const diffDays = Math.floor(diffHours / 24);
 
     if (diffMins < 1) return 'Agora';
-    if (diffMins < 60) return `${diffMins} min atrás`;
-    if (diffHours < 24) return `${diffHours} h atrás`;
+    if (diffMins < 60) return `${diffMins}m atrás`;
+    if (diffHours < 24) return `${diffHours}h atrás`;
     if (diffDays === 1) return 'Ontem';
     return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
   };
 
   return (
     <View style={styles.container}>
-      {/* Barra de Busca */}
+      {/* Barra de Busca Moderna */}
       <View style={styles.searchRow}>
         <View style={styles.searchBar}>
-          <Search size={18} color="#64748b" style={styles.searchIcon} />
+          <Search size={16} color="#64748b" style={styles.searchIcon} />
           <TextInput
             style={styles.searchInput}
             placeholder="Buscar conversas..."
@@ -95,15 +95,20 @@ export default function ConversationsScreen({
             value={searchQuery}
             onChangeText={setSearchQuery}
           />
+          {searchQuery ? (
+            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearBtn}>
+              <X size={15} color="#94a3b8" />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
 
-      {/* Filtro por Projeto */}
+      {/* Filtro por Projeto com Chips Estilizados */}
       <View style={styles.projectsScroll}>
         <FlatList
           horizontal
           showsHorizontalScrollIndicator={false}
-          data={[{ id: '', name: 'Todos os Projetos' }, ...projects]}
+          data={[{ id: '', name: 'Todos' }, ...projects]}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ paddingHorizontal: 16 }}
           renderItem={({ item }) => {
@@ -111,12 +116,13 @@ export default function ConversationsScreen({
             return (
               <TouchableOpacity
                 style={[styles.projectChip, isSelected && styles.projectChipActive]}
+                activeOpacity={0.7}
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   setSelectedProjectId(item.id === '' ? null : item.id);
                 }}
               >
-                <Folder size={13} color={isSelected ? '#ffffff' : '#94a3b8'} style={{ marginRight: 6 }} />
+                <Folder size={12} color={isSelected ? '#38bdf8' : '#64748b'} style={{ marginRight: 5 }} />
                 <Text style={[styles.projectChipText, isSelected && styles.projectChipTextActive]}>
                   {item.name}
                 </Text>
@@ -126,17 +132,17 @@ export default function ConversationsScreen({
         />
       </View>
 
-      {/* Lista de Conversas */}
+      {/* Lista de Conversas com Cards Glassmorphic */}
       {isLoading ? (
         <View style={styles.loadingCenter}>
           <ActivityIndicator size="large" color="#38bdf8" />
-          <Text style={styles.loadingText}>Carregando conversas do Antigravity...</Text>
+          <Text style={styles.loadingText}>Sincronizando com o Antigravity...</Text>
         </View>
       ) : (
         <FlatList
           data={filteredConversations}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { paddingBottom: 100 }]}
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
@@ -146,69 +152,74 @@ export default function ConversationsScreen({
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <MessageSquare size={48} color="#334155" />
+              <View style={styles.emptyIconWrap}>
+                <MessageSquare size={36} color="#38bdf8" />
+              </View>
               <Text style={styles.emptyTitle}>Nenhuma conversa encontrada</Text>
               <Text style={styles.emptyDesc}>
                 {searchQuery
-                  ? 'Tente outro termo de busca'
-                  : 'Toque no botão + abaixo para iniciar uma nova conversa com o Antigravity.'}
+                  ? 'Nenhum resultado corresponde à sua pesquisa.'
+                  : 'Inicie uma nova tarefa no seu PC tocando no botão "+ Nova Conversa" abaixo.'}
               </Text>
             </View>
           }
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.convoCard}
-              activeOpacity={0.7}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                onSelectConversation(item);
-              }}
-            >
-              <View style={styles.cardHeader}>
-                <View style={styles.titleWrap}>
-                  <Text style={styles.convoTitle} numberOfLines={1}>
-                    {item.title}
+          renderItem={({ item }) => {
+            const isActive = !!item.is_active;
+            return (
+              <TouchableOpacity
+                style={[styles.convoCard, isActive && styles.convoCardActive]}
+                activeOpacity={0.75}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  onSelectConversation(item);
+                }}
+              >
+                <View style={styles.cardHeader}>
+                  <View style={styles.titleWrap}>
+                    <Text style={styles.convoTitle} numberOfLines={1}>
+                      {item.title}
+                    </Text>
+                  </View>
+                  {isActive ? (
+                    <View style={styles.activeBadge}>
+                      <View style={styles.activeDot} />
+                      <Text style={styles.activeText}>Executando</Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                {item.preview ? (
+                  <Text style={styles.convoPreview} numberOfLines={2}>
+                    {item.preview}
                   </Text>
-                </View>
-                {item.is_active && (
-                  <View style={styles.activeBadge}>
-                    <View style={styles.activeDot} />
-                    <Text style={styles.activeText}>Ativo</Text>
+                ) : null}
+
+                <View style={styles.cardFooter}>
+                  <View style={styles.projectTag}>
+                    <Folder size={11} color="#38bdf8" style={{ marginRight: 4 }} />
+                    <Text style={styles.projectTagText} numberOfLines={1}>
+                      {item.project_name}
+                    </Text>
                   </View>
-                )}
-              </View>
 
-              {item.preview ? (
-                <Text style={styles.convoPreview} numberOfLines={2}>
-                  {item.preview}
-                </Text>
-              ) : null}
-
-              <View style={styles.cardFooter}>
-                <View style={styles.projectTag}>
-                  <Folder size={12} color="#38bdf8" style={{ marginRight: 4 }} />
-                  <Text style={styles.projectTagText} numberOfLines={1}>
-                    {item.project_name}
-                  </Text>
-                </View>
-
-                <View style={styles.metaRow}>
-                  <View style={styles.metaItem}>
-                    <Layers size={12} color="#64748b" style={{ marginRight: 4 }} />
-                    <Text style={styles.metaText}>{item.step_count} passos</Text>
-                  </View>
-                  <View style={[styles.metaItem, { marginLeft: 12 }]}>
-                    <Clock size={12} color="#64748b" style={{ marginRight: 4 }} />
-                    <Text style={styles.metaText}>{formatRelativeTime(item.last_modified_time)}</Text>
+                  <View style={styles.metaRow}>
+                    <View style={styles.metaItem}>
+                      <Layers size={11} color="#64748b" style={{ marginRight: 3 }} />
+                      <Text style={styles.metaText}>{item.step_count}</Text>
+                    </View>
+                    <View style={[styles.metaItem, { marginLeft: 10 }]}>
+                      <Clock size={11} color="#64748b" style={{ marginRight: 3 }} />
+                      <Text style={styles.metaText}>{formatRelativeTime(item.last_modified_time)}</Text>
+                    </View>
                   </View>
                 </View>
-              </View>
-            </TouchableOpacity>
-          )}
+              </TouchableOpacity>
+            );
+          }}
         />
       )}
 
-      {/* Botão Flutuante (Criar Nova Conversa) */}
+      {/* Botão Flutuante Moderno (Criar Nova Conversa) */}
       <TouchableOpacity
         style={styles.fab}
         activeOpacity={0.85}
@@ -217,7 +228,8 @@ export default function ConversationsScreen({
           onOpenNewConversation();
         }}
       >
-        <Plus size={24} color="#ffffff" />
+        <Plus size={20} color="#ffffff" style={{ marginRight: 6 }} />
+        <Text style={styles.fabText}>Nova Conversa</Text>
       </TouchableOpacity>
     </View>
   );
@@ -230,16 +242,16 @@ const styles = StyleSheet.create({
   },
   searchRow: {
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 10,
     paddingBottom: 8,
   },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#131d2e',
+    backgroundColor: '#111a2e',
     borderRadius: 12,
     paddingHorizontal: 12,
-    height: 44,
+    height: 42,
     borderWidth: 1,
     borderColor: '#1e293b',
   },
@@ -249,38 +261,41 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     color: '#f8fafc',
-    fontSize: 14,
+    fontSize: 13,
+  },
+  clearBtn: {
+    padding: 4,
   },
   projectsScroll: {
-    maxHeight: 46,
     marginBottom: 8,
   },
   projectChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#131d2e',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    backgroundColor: '#111a2e',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 20,
     marginRight: 8,
     borderWidth: 1,
     borderColor: '#1e293b',
   },
   projectChipActive: {
-    backgroundColor: '#0284c7',
+    backgroundColor: 'rgba(2, 132, 199, 0.18)',
     borderColor: '#38bdf8',
   },
   projectChipText: {
-    fontSize: 12,
-    fontWeight: '600',
     color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '500',
   },
   projectChipTextActive: {
-    color: '#ffffff',
+    color: '#38bdf8',
+    fontWeight: '700',
   },
   listContent: {
-    padding: 16,
-    paddingBottom: 100,
+    paddingHorizontal: 16,
+    paddingTop: 6,
   },
   loadingCenter: {
     flex: 1,
@@ -289,35 +304,50 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     color: '#94a3b8',
-    fontSize: 14,
     marginTop: 12,
+    fontSize: 13,
   },
   emptyContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 80,
+    paddingTop: 60,
     paddingHorizontal: 32,
   },
+  emptyIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 20,
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.25)',
+  },
   emptyTitle: {
-    color: '#f8fafc',
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
-    marginTop: 16,
+    color: '#f8fafc',
+    marginBottom: 6,
   },
   emptyDesc: {
-    color: '#64748b',
     fontSize: 13,
+    color: '#64748b',
     textAlign: 'center',
-    marginTop: 8,
     lineHeight: 18,
   },
   convoCard: {
-    backgroundColor: '#131d2e',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
+    backgroundColor: '#111a2e',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: '#1e293b',
+  },
+  convoCardActive: {
+    borderColor: 'rgba(56, 189, 248, 0.5)',
+    borderLeftWidth: 3,
+    borderLeftColor: '#38bdf8',
   },
   cardHeader: {
     flexDirection: 'row',
@@ -327,7 +357,6 @@ const styles = StyleSheet.create({
   },
   titleWrap: {
     flex: 1,
-    marginRight: 8,
   },
   convoTitle: {
     color: '#f8fafc',
@@ -337,20 +366,23 @@ const styles = StyleSheet.create({
   activeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(52, 211, 153, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
   },
   activeDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#34d399',
-    marginRight: 5,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#38bdf8',
+    marginRight: 4,
   },
   activeText: {
-    color: '#34d399',
+    color: '#38bdf8',
     fontSize: 10,
     fontWeight: '700',
   },
@@ -358,7 +390,7 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 13,
     lineHeight: 18,
-    marginBottom: 12,
+    marginBottom: 10,
   },
   cardFooter: {
     flexDirection: 'row',
@@ -371,11 +403,11 @@ const styles = StyleSheet.create({
   projectTag: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
     borderRadius: 6,
-    maxWidth: '45%',
+    maxWidth: '55%',
   },
   projectTagText: {
     color: '#38bdf8',
@@ -397,17 +429,22 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
     bottom: 24,
-    right: 24,
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    backgroundColor: '#0284c7',
+    right: 20,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 25,
     elevation: 8,
     shadowColor: '#0284c7',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4,
-    shadowRadius: 6,
+    shadowRadius: 8,
+  },
+  fabText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

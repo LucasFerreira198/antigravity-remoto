@@ -8,6 +8,7 @@ import {
   Switch,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
 import {
   ArrowLeft,
@@ -99,10 +100,17 @@ export default function SettingsScreen({ onBack, onDisconnect }: SettingsScreenP
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={onBack}>
-          <ArrowLeft size={22} color="#f8fafc" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Configurações do Antigravity</Text>
+        <View style={styles.headerLeft}>
+          <TouchableOpacity style={styles.backBtn} onPress={onBack}>
+            <ArrowLeft size={22} color="#f8fafc" />
+          </TouchableOpacity>
+          <Image
+            source={require('../../assets/icon.png')}
+            style={styles.headerLogo}
+            resizeMode="contain"
+          />
+          <Text style={styles.headerTitle}>Configurações</Text>
+        </View>
         <TouchableOpacity
           style={[styles.saveBtn, isSaving && styles.saveBtnDisabled]}
           onPress={handleSave}
@@ -302,6 +310,18 @@ const styles = StyleSheet.create({
   },
   backBtn: {
     padding: 6,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerLogo: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
   },
   headerTitle: {
     color: '#f8fafc',

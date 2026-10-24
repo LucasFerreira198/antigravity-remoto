@@ -11,6 +11,7 @@ import {
   Platform,
   Clipboard,
   Alert,
+  Image,
 } from 'react-native';
 import {
   ArrowLeft,
@@ -327,9 +328,11 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           return (
             <View style={styles.assistantBubble}>
               <View style={styles.assistantHeader}>
-                <View style={styles.assistantAvatar}>
-                  <Sparkles size={12} color="#ffffff" />
-                </View>
+                <Image
+                  source={require('../../assets/icon.png')}
+                  style={styles.assistantAvatarImg}
+                  resizeMode="contain"
+                />
                 <Text style={styles.assistantName}>Antigravity</Text>
                 <TouchableOpacity
                   style={styles.copyBtn}
@@ -669,14 +672,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  assistantAvatar: {
+  assistantAvatarImg: {
     width: 22,
     height: 22,
-    borderRadius: 11,
-    backgroundColor: '#0284c7',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderRadius: 6,
     marginRight: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
   },
   assistantName: {
     flex: 1,

@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { X, FileText, Copy, Check, ArrowLeft, Image as ImageIcon } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import Markdown from 'react-native-markdown-display';
 import { api } from '../services/api';
 import { Artifact } from '../types';
 
@@ -131,7 +132,13 @@ export default function ArtifactViewerModal({
               </ScrollView>
             ) : (
               <ScrollView contentContainerStyle={styles.textScroll}>
-                <Text style={styles.artifactText}>{contentData?.content}</Text>
+                {selectedArtifact?.is_markdown ? (
+                  <Markdown style={markdownStyles}>
+                    {contentData?.content || ''}
+                  </Markdown>
+                ) : (
+                  <Text style={styles.artifactText}>{contentData?.content}</Text>
+                )}
               </ScrollView>
             )
           ) : (
@@ -300,5 +307,112 @@ const styles = StyleSheet.create({
   artifactImage: {
     width: '100%',
     height: 350,
+  },
+});
+
+const markdownStyles = StyleSheet.create({
+  body: {
+    color: '#e2e8f0',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  heading1: {
+    color: '#38bdf8',
+    fontSize: 20,
+    fontWeight: '700',
+    marginTop: 14,
+    marginBottom: 6,
+  },
+  heading2: {
+    color: '#60a5fa',
+    fontSize: 17,
+    fontWeight: '700',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  heading3: {
+    color: '#93c5fd',
+    fontSize: 15,
+    fontWeight: '600',
+    marginTop: 10,
+    marginBottom: 4,
+  },
+  paragraph: {
+    marginTop: 0,
+    marginBottom: 8,
+  },
+  link: {
+    color: '#38bdf8',
+    textDecorationLine: 'underline',
+  },
+  code_inline: {
+    backgroundColor: '#1e293b',
+    color: '#38bdf8',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  code_block: {
+    backgroundColor: '#0f172a',
+    borderColor: '#1e293b',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginVertical: 8,
+    color: '#f8fafc',
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  fence: {
+    backgroundColor: '#0f172a',
+    borderColor: '#1e293b',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginVertical: 8,
+    color: '#f8fafc',
+    fontSize: 13,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  blockquote: {
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+    borderLeftColor: '#38bdf8',
+    borderLeftWidth: 3,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginVertical: 6,
+    borderRadius: 4,
+  },
+  bullet_list: {
+    marginVertical: 4,
+  },
+  ordered_list: {
+    marginVertical: 4,
+  },
+  table: {
+    borderColor: '#334155',
+    borderWidth: 1,
+    borderRadius: 6,
+    marginVertical: 8,
+  },
+  th: {
+    backgroundColor: '#1e293b',
+    padding: 8,
+    borderColor: '#334155',
+    borderWidth: 0.5,
+    color: '#f8fafc',
+    fontWeight: '700',
+  },
+  td: {
+    padding: 8,
+    borderColor: '#334155',
+    borderWidth: 0.5,
+    color: '#e2e8f0',
+  },
+  strong: {
+    fontWeight: '700',
+    color: '#ffffff',
   },
 });

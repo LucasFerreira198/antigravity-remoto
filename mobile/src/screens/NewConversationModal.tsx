@@ -9,6 +9,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
 import { X, Sparkles, Folder, Send } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
@@ -80,7 +81,11 @@ export default function NewConversationModal({
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerTitleRow}>
-              <Sparkles size={20} color="#38bdf8" style={{ marginRight: 8 }} />
+              <Image
+                source={require('../../assets/icon.png')}
+                style={styles.headerLogo}
+                resizeMode="contain"
+              />
               <Text style={styles.headerTitle}>Nova Conversa</Text>
             </View>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
@@ -210,6 +215,14 @@ const styles = StyleSheet.create({
   headerTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  headerLogo: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
   },
   headerTitle: {
     color: '#f8fafc',

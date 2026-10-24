@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
-import { ShieldCheck, Sliders, Folder, Cpu } from 'lucide-react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Image } from 'react-native';
+import { Sliders, Folder, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
 
@@ -24,37 +24,47 @@ export default function Header({ onOpenSettings, onOpenProjects }: HeaderProps) 
     <View style={styles.header}>
       <View style={styles.titleWrap}>
         <View style={styles.logoRow}>
-          <ShieldCheck size={20} color="#38bdf8" style={{ marginRight: 6 }} />
-          <Text style={styles.title}>Antigravity</Text>
-          <View style={styles.badge}>
-            <View style={styles.onlineDot} />
-            <Text style={styles.badgeText}>{statusData?.hostname || 'Online'}</Text>
+          <Image
+            source={require('../../assets/icon.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
+          <View>
+            <View style={styles.titleRow}>
+              <Text style={styles.title}>Antigravity</Text>
+              <View style={styles.badge}>
+                <View style={styles.onlineDot} />
+                <Text style={styles.badgeText}>{statusData?.hostname || 'Online'}</Text>
+              </View>
+            </View>
+            <Text style={styles.subtext}>
+              {statusData?.settings?.model || 'Gemini 3.8 Flash'} • Remoto
+            </Text>
           </View>
         </View>
-        <Text style={styles.subtext}>
-          {statusData?.settings?.model || 'Gemini 3.8 Flash'} • Remoto
-        </Text>
       </View>
 
       <View style={styles.actions}>
         <TouchableOpacity
           style={styles.actionBtn}
+          activeOpacity={0.7}
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             onOpenProjects();
           }}
         >
-          <Folder size={18} color="#94a3b8" />
+          <Folder size={17} color="#38bdf8" />
         </TouchableOpacity>
 
         <TouchableOpacity
           style={[styles.actionBtn, { marginLeft: 8 }]}
+          activeOpacity={0.7}
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             onOpenSettings();
           }}
         >
-          <Sliders size={18} color="#94a3b8" />
+          <Sliders size={17} color="#94a3b8" />
         </TouchableOpacity>
       </View>
     </View>
@@ -67,9 +77,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: 14,
+    paddingTop: 12,
     paddingBottom: 12,
-    backgroundColor: '#131d2e',
+    backgroundColor: '#0d1322',
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
   },
@@ -80,27 +90,41 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  logoImage: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   title: {
     color: '#f8fafc',
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
     letterSpacing: 0.3,
   },
   badge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(52, 211, 153, 0.15)',
-    paddingHorizontal: 8,
+    backgroundColor: 'rgba(52, 211, 153, 0.12)',
+    paddingHorizontal: 7,
     paddingVertical: 2,
-    borderRadius: 10,
+    borderRadius: 12,
     marginLeft: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.25)',
   },
   onlineDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
     backgroundColor: '#34d399',
-    marginRight: 4,
+    marginRight: 5,
   },
   badgeText: {
     color: '#34d399',
@@ -110,7 +134,7 @@ const styles = StyleSheet.create({
   subtext: {
     color: '#64748b',
     fontSize: 11,
-    marginTop: 2,
+    marginTop: 1,
     fontWeight: '500',
   },
   actions: {
@@ -118,8 +142,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   actionBtn: {
-    padding: 8,
-    backgroundColor: '#0f172a',
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#131d2e',
     borderRadius: 10,
     borderWidth: 1,
     borderColor: '#1e293b',
