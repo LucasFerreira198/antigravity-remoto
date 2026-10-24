@@ -10,7 +10,10 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Keyboard,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, Sparkles, Folder, Send } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
@@ -27,12 +30,29 @@ export default function NewConversationModal({
   onClose,
   onCreated,
 }: NewConversationModalProps) {
+  const insets = useSafeAreaInsets();
   const [prompt, setPrompt] = useState('');
   const [title, setTitle] = useState('');
   const [model, setModel] = useState<'flash' | 'pro' | 'flash_lite'>('flash');
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => setKeyboardHeight(e.endCoordinates ? e.endCoordinates.height : 260)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardHeight(0)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (visible) {
@@ -77,7 +97,14 @@ export default function NewConversationModal({
   return (
     <Modal visible={visible} animationType="slide" transparent>
       <View style={styles.overlay}>
-        <View style={styles.modalCard}>
+        <View
+          style={[
+            styles.modalCard,
+            {
+              paddingBottom: Math.max(insets.bottom, 20) + keyboardHeight,
+            },
+          ]}
+        >
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerTitleRow}>

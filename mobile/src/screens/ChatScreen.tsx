@@ -14,7 +14,9 @@ import {
   Image,
   Modal,
   ScrollView,
+  Keyboard,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
   Send,
@@ -53,6 +55,7 @@ interface ChatScreenProps {
 }
 
 export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: ChatScreenProps) {
+  const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<Message[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [inputPrompt, setInputPrompt] = useState('');
@@ -63,6 +66,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [displayCount, setDisplayCount] = useState(35);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   // Anexo de Imagem
   const [selectedImage, setSelectedImage] = useState<{ uri: string; base64: string; filename: string } | null>(null);
@@ -76,7 +80,35 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const wsRef = useRef<ConversationWebSocket | null>(null);
   const pollTimerRef = useRef<any>(null);
 
-  // 1. Carregamento inicial (Cache instantâneo local + busca em rede)
+  // Monitorar altura do teclado virtual
+  useEffect(() => {
+    const onShow = (e: any) => {
+      const h = e.endCoordinates ? e.endCoordinates.height : 280;
+      setKeyboardHeight(h);
+      setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      }, 80);
+    };
+    const onHide = () => {
+      setKeyboardHeight(0);
+    };
+
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      onShow
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      onHide
+    );
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  // 1. Carregamento inicial (Cache instantâneo local + busca em rede + sync contínuo)
   useEffect(() => {
     let isMounted = true;
 
@@ -98,9 +130,38 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     ws.connect();
     wsRef.current = ws;
 
+    // Sincronização contínua a cada 2.5s (garante que mensagens do PC apareçam na hora)
+    const autoSyncTimer = setInterval(async () => {
+      if (!isMounted) return;
+      try {
+        const fresh = await api.getConversation(conversation.id);
+        if (fresh && fresh.messages) {
+          setMessages((prev) => {
+            if (fresh.messages.length !== prev.length) {
+              StorageService.saveChatCache(conversation.id, fresh.messages, fresh.artifacts || []);
+              setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+              return fresh.messages;
+            }
+            // Checar se a última mensagem mudou (ex: progresso de stream ou novo tool call)
+            if (prev.length > 0 && fresh.messages.length > 0) {
+              const lastP = prev[prev.length - 1];
+              const lastF = fresh.messages[fresh.messages.length - 1];
+              if (lastP.content !== lastF.content || lastP.step_index !== lastF.step_index || lastP.type !== lastF.type) {
+                return fresh.messages;
+              }
+            }
+            return prev;
+          });
+          if (fresh.is_active !== undefined) setIsActive(fresh.is_active);
+          if (fresh.artifacts) setArtifacts(fresh.artifacts);
+        }
+      } catch (e) {}
+    }, 2500);
+
     return () => {
       isMounted = false;
       ws.disconnect();
+      clearInterval(autoSyncTimer);
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
       }
@@ -407,10 +468,13 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const hasMoreMessages = messages.length > displayCount;
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
-      style={styles.container}
+    <View
+      style={[
+        styles.container,
+        {
+          paddingBottom: keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 6),
+        },
+      ]}
     >
       {/* Cabeçalho Shadcn Obsidian */}
       <View style={styles.header}>
@@ -606,8 +670,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         }}
         ListFooterComponent={
           (isActive || isSending) ? (
-            <View style={styles.workingCard}>
-              <View style={styles.workingPulseDot} />
+            <View style={styles.workingRow}>
               <Text style={styles.workingText}>Working</Text>
             </View>
           ) : null
@@ -656,7 +719,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         ))}
       </View>
 
-      {/* Input de Envio Shadcn */}
+      {/* Input de Envio Shadcn com Foco Inteligente */}
       <View style={styles.inputContainer}>
         {/* Botão de Anexo de Foto */}
         <TouchableOpacity
@@ -673,6 +736,11 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           placeholderTextColor="#64748b"
           value={inputPrompt}
           onChangeText={setInputPrompt}
+          onFocus={() => {
+            setTimeout(() => {
+              flatListRef.current?.scrollToEnd({ animated: true });
+            }, 150);
+          }}
           multiline
           maxLength={8000}
         />
@@ -724,7 +792,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           </View>
         </TouchableOpacity>
       </Modal>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -917,23 +985,14 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
-  workingCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  workingRow: {
     paddingVertical: 6,
-    paddingLeft: 8,
-  },
-  workingPulseDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#38bdf8',
-    marginRight: 8,
+    paddingLeft: 6,
   },
   workingText: {
-    color: '#94a3b8',
+    color: '#8b949e',
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   assistantCard: {
     backgroundColor: '#0f172a',
