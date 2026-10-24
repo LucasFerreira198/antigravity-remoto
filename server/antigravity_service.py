@@ -186,15 +186,37 @@ class AntigravityService:
         is_active = False
         if transcript_file.exists():
             try:
-                # Verificar se o arquivo foi modificado nos últimos 20 segundos
-                mtime = transcript_file.stat().st_mtime
-                if (datetime.datetime.now().timestamp() - mtime) < 20:
-                    is_active = True
-
                 with open(transcript_file, "r", encoding="utf-8") as f:
                     all_lines = f.readlines()
                     # Ler até as últimas 150 linhas para resposta instantânea no mobile
                     target_lines = all_lines[-150:] if len(all_lines) > 150 else all_lines
+
+                # Determinar com precisão se o agente está trabalhando:
+                # O turno permanece ativo enquanto o último passo não for uma resposta final com conteúdo
+                for l in reversed(target_lines[-10:] if len(target_lines) > 10 else target_lines):
+                    l = l.strip()
+                    if not l:
+                        continue
+                    try:
+                        s_data = json.loads(l)
+                        st = s_data.get("type")
+                        cnt = s_data.get("content")
+                        if st in ("USER_INPUT", "GENERIC"):
+                            is_active = True
+                            break
+                        elif st == "PLANNER_RESPONSE":
+                            has_tools = bool(s_data.get("tool_calls"))
+                            if has_tools:
+                                is_active = True
+                                break
+                            elif cnt and cnt.strip():
+                                is_active = False
+                                break
+                            else:
+                                is_active = True
+                                break
+                    except Exception:
+                        continue
 
                 prev_time = None
                 for line in target_lines:

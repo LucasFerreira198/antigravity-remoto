@@ -120,7 +120,7 @@ class CDPController:
 
                 await asyncio.sleep(0.3)
 
-                # 4. Enviar mensagem (clicar no botão Send ou disparar tecla Enter)
+                # 4. Enviar mensagem (clicar no botão Send ou disparar tecla Enter nativa)
                 submit_expr = """
                 (() => {
                     const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"], button[aria-label^="Send"]');
@@ -128,29 +128,16 @@ class CDPController:
                         btn.click();
                         return 'clicked_button';
                     }
-                    const el = document.querySelector('[aria-label="Message input"]');
-                    if (el) {
-                        const evt = new KeyboardEvent('keydown', {
-                            key: 'Enter',
-                            code: 'Enter',
-                            keyCode: 13,
-                            which: 13,
-                            bubbles: true,
-                            cancelable: true
-                        });
-                        el.dispatchEvent(evt);
-                        return 'dispatched_enter';
-                    }
-                    return 'none';
+                    return 'need_enter';
                 })()
                 """
                 res4 = await cdp_call("Runtime.evaluate", {"expression": submit_expr, "returnByValue": True}, msg_id=4)
                 sub_res = res4.get("result", {}).get("result", {}).get("value")
 
-                if sub_res == 'none':
-                    # Fallback para tecla Enter via eventos de teclado CDP
+                if sub_res != 'clicked_button':
+                    # Fallback para tecla Enter via eventos nativos de teclado CDP
                     await cdp_call("Input.dispatchKeyEvent", {
-                        "type": "keyDown",
+                        "type": "rawKeyDown",
                         "key": "Enter",
                         "code": "Enter",
                         "windowsVirtualKeyCode": 13,
@@ -169,6 +156,31 @@ class CDPController:
         except Exception as e:
             print(f"[CDP Controller] Erro ao enviar mensagem para desktop: {e}")
             return False
+
+    async def get_desktop_pending_text(self, conversation_id: str) -> Optional[str]:
+        """Obtém o texto que está digitado no campo de mensagem do desktop aguardando envio."""
+        port = self.get_devtools_port()
+        if not port:
+            return None
+        ws_url = await self.get_page_ws_url(port)
+        if not ws_url:
+            return None
+        try:
+            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=3) as ws:
+                expr = """
+                (() => {
+                    const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
+                    if (el) {
+                        return (el.innerText || el.value || '').trim();
+                    }
+                    return '';
+                })()
+                """
+                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": expr, "returnByValue": True}}))
+                res = json.loads(await ws.recv())
+                return res.get("result", {}).get("result", {}).get("value") or ""
+        except Exception:
+            return None
 
     async def create_conversation_on_desktop(self, prompt: str, project_id: Optional[str] = None) -> Optional[str]:
         """Cria nova conversa na janela do PC clicando em 'New Conversation' ou navegando para '/'."""

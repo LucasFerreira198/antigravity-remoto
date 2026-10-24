@@ -15,6 +15,7 @@ import {
   Modal,
   ScrollView,
   Keyboard,
+  Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -39,6 +40,8 @@ import {
   CheckSquare,
   Square,
   Circle,
+  Clock,
+  Laptop,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
@@ -67,6 +70,28 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [displayCount, setDisplayCount] = useState(35);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
+  const [desktopPendingText, setDesktopPendingText] = useState<string>('');
+
+  // Animação de pulso sutil do indicador Working
+  const workingPulse = useRef(new Animated.Value(0.4)).current;
+  useEffect(() => {
+    let anim: Animated.CompositeAnimation | null = null;
+    if (isActive || isSending) {
+      anim = Animated.loop(
+        Animated.sequence([
+          Animated.timing(workingPulse, { toValue: 1, duration: 850, useNativeDriver: true }),
+          Animated.timing(workingPulse, { toValue: 0.35, duration: 850, useNativeDriver: true }),
+        ])
+      );
+      anim.start();
+    } else {
+      workingPulse.setValue(0.4);
+    }
+    return () => {
+      anim?.stop();
+    };
+  }, [isActive, isSending]);
 
   // Anexo de Imagem
   const [selectedImage, setSelectedImage] = useState<{ uri: string; base64: string; filename: string } | null>(null);
@@ -152,7 +177,15 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             }
             return prev;
           });
-          if (fresh.is_active !== undefined) setIsActive(fresh.is_active);
+          if (fresh.is_active !== undefined) {
+            setIsActive(fresh.is_active);
+            if (!fresh.is_active) {
+              setQueuedMessages([]);
+            }
+          }
+          if (fresh.desktop_pending_text !== undefined) {
+            setDesktopPendingText(fresh.desktop_pending_text);
+          }
           if (fresh.artifacts) setArtifacts(fresh.artifacts);
         }
       } catch (e) {}
@@ -180,6 +213,9 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       }
       if (data.is_active !== undefined) {
         setIsActive(data.is_active);
+      }
+      if (data.desktop_pending_text !== undefined) {
+        setDesktopPendingText(data.desktop_pending_text);
       }
       if (scrollAfter) {
         setTimeout(() => {
@@ -220,14 +256,17 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const handleSend = async (overrideText?: string) => {
     const textToSend = (overrideText || inputPrompt).trim();
     if (!textToSend && !selectedImage) return;
-    if (isSending) return;
 
-    setIsSending(true);
     setInputPrompt('');
     const imagePayload = selectedImage ? { base64: selectedImage.base64, filename: selectedImage.filename } : undefined;
     const tempImageUri = selectedImage?.uri;
     setSelectedImage(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // Se o assistente já estiver trabalhando, registrar na fila visual
+    if (isActive) {
+      setQueuedMessages((prev) => [...prev, textToSend]);
+    }
 
     // Mensagem otimista imediata na tela
     const tempIndex = messages.length ? Math.max(...messages.map((m) => m.step_index)) + 1 : 1;
@@ -241,6 +280,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     };
     setMessages((prev) => [...prev, optimisticMsg]);
     setIsActive(true);
+    setIsSending(true);
 
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
@@ -260,6 +300,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             setMessages(fresh.messages);
             if (fresh.artifacts) setArtifacts(fresh.artifacts);
             if (!fresh.is_active) {
+              setQueuedMessages([]);
               setIsSending(false);
               setIsActive(false);
               clearInterval(pollTimerRef.current);
@@ -270,6 +311,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           clearInterval(pollTimerRef.current);
           setIsSending(false);
           setIsActive(false);
+          setQueuedMessages([]);
         }
       }, 1000);
 
@@ -614,14 +656,13 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                   onPress={() => toggleTool(stepKey)}
                   activeOpacity={0.7}
                 >
-                  <View style={styles.toolIconWrap}>{renderToolIcon(tc.icon)}</View>
                   <Text style={styles.toolTitleText} numberOfLines={1}>
                     {tc.title || tc.name}
                   </Text>
                   {isExpanded ? (
-                    <ChevronDown size={14} color="#64748b" style={{ marginLeft: 'auto' }} />
+                    <ChevronDown size={14} color="#64748b" style={{ marginLeft: 6 }} />
                   ) : (
-                    <ChevronRight size={14} color="#64748b" style={{ marginLeft: 'auto' }} />
+                    <ChevronRight size={14} color="#64748b" style={{ marginLeft: 6 }} />
                   )}
                 </TouchableOpacity>
 
@@ -671,7 +712,9 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         ListFooterComponent={
           (isActive || isSending) ? (
             <View style={styles.workingRow}>
-              <Text style={styles.workingText}>Working</Text>
+              <Animated.Text style={[styles.workingText, { opacity: workingPulse }]}>
+                Working
+              </Animated.Text>
             </View>
           ) : null
         }
@@ -703,6 +746,66 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         </View>
       )}
 
+      {/* Texto Aguardando no Computador */}
+      {desktopPendingText && desktopPendingText !== inputPrompt ? (
+        <View style={styles.desktopPendingCard}>
+          <View style={styles.desktopPendingHeader}>
+            <Laptop size={12} color="#38bdf8" style={{ marginRight: 6 }} />
+            <Text style={styles.desktopPendingTitle}>Digitado no PC (Aguardando Envio)</Text>
+          </View>
+          <Text style={styles.desktopPendingText} numberOfLines={2}>
+            {desktopPendingText}
+          </Text>
+          <View style={styles.desktopPendingActions}>
+            <TouchableOpacity
+              style={styles.desktopPendingBtnSecondary}
+              onPress={() => {
+                setInputPrompt(desktopPendingText);
+              }}
+            >
+              <Text style={styles.desktopPendingBtnTextSecondary}>Copiar para Celular</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.desktopPendingBtnPrimary}
+              onPress={() => {
+                const toSend = desktopPendingText;
+                setDesktopPendingText('');
+                handleSend(toSend);
+              }}
+            >
+              <Send size={12} color="#ffffff" style={{ marginRight: 4 }} />
+              <Text style={styles.desktopPendingBtnTextPrimary}>Enviar ao Chat</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Mensagens na Fila de Envio */}
+      {queuedMessages.length > 0 && (
+        <View style={styles.queuedCard}>
+          <View style={styles.queuedHeaderRow}>
+            <Clock size={12} color="#f59e0b" style={{ marginRight: 6 }} />
+            <Text style={styles.queuedTitle}>Na fila de envio ({queuedMessages.length})</Text>
+          </View>
+          {queuedMessages.map((qMsg, qIdx) => (
+            <View key={qIdx} style={styles.queuedItemRow}>
+              <Text style={styles.queuedText} numberOfLines={2}>
+                • {qMsg}
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setInputPrompt(qMsg);
+                  setQueuedMessages((prev) => prev.filter((_, idx) => idx !== qIdx));
+                }}
+                style={styles.queuedEditBtn}
+              >
+                <Text style={styles.queuedEditText}>Editar</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
+
       {/* Barra de Ações Rápidas (Slash Commands) */}
       <View style={styles.slashCommandsBar}>
         {['/plan', '/goal', '/compact', '/browser'].map((cmd) => (
@@ -725,7 +828,6 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         <TouchableOpacity
           style={styles.attachBtn}
           onPress={() => setShowImagePickerModal(true)}
-          disabled={isSending}
         >
           <ImageIcon size={20} color="#38bdf8" />
         </TouchableOpacity>
@@ -748,7 +850,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         <TouchableOpacity
           style={[styles.sendBtn, (!inputPrompt.trim() && !selectedImage) && styles.sendBtnDisabled]}
           onPress={() => handleSend()}
-          disabled={(!inputPrompt.trim() && !selectedImage) || isSending}
+          disabled={!inputPrompt.trim() && !selectedImage}
         >
           {isSending ? (
             <ActivityIndicator size="small" color="#ffffff" />
@@ -1133,6 +1235,106 @@ const styles = StyleSheet.create({
   },
   removeImageBtn: {
     padding: 6,
+  },
+  desktopPendingCard: {
+    backgroundColor: '#0c1929',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginHorizontal: 14,
+    marginBottom: 6,
+  },
+  desktopPendingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  desktopPendingTitle: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  desktopPendingText: {
+    color: '#e2e8f0',
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: 6,
+  },
+  desktopPendingActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  desktopPendingBtnSecondary: {
+    backgroundColor: '#1e293b',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  desktopPendingBtnTextSecondary: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  desktopPendingBtnPrimary: {
+    backgroundColor: '#0284c7',
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  desktopPendingBtnTextPrimary: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  queuedCard: {
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginHorizontal: 14,
+    marginBottom: 6,
+  },
+  queuedHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  queuedTitle: {
+    color: '#f59e0b',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  queuedItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  },
+  queuedText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    lineHeight: 16,
+    flex: 1,
+  },
+  queuedEditBtn: {
+    backgroundColor: '#27272a',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: 8,
+  },
+  queuedEditText: {
+    color: '#f59e0b',
+    fontSize: 10,
+    fontWeight: '600',
   },
   slashCommandsBar: {
     flexDirection: 'row',

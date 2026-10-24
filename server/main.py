@@ -166,13 +166,24 @@ def list_conversations(limit: int = 50, project_id: Optional[str] = None):
     return service.list_conversations(limit=limit, project_id=project_id)
 
 @app.get("/api/conversations/{conversation_id}", dependencies=[Depends(verify_token)])
-def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str):
     data = service.get_conversation_transcript(conversation_id)
     if not data["messages"] and not data["artifacts"]:
         convos = service.list_conversations(limit=200)
         found = any(c["id"] == conversation_id for c in convos)
         if not found:
             raise HTTPException(status_code=404, detail="Conversa não encontrada.")
+    
+    # Verificar se há texto digitado no desktop aguardando envio
+    try:
+        if await cdp_controller.is_desktop_available():
+            pending = await cdp_controller.get_desktop_pending_text(conversation_id)
+            data["desktop_pending_text"] = pending or ""
+        else:
+            data["desktop_pending_text"] = ""
+    except Exception:
+        data["desktop_pending_text"] = ""
+        
     return data
 
 @app.post("/api/conversations/new", dependencies=[Depends(verify_token)])
