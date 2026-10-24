@@ -1,4 +1,4 @@
-name: Build & Release Antigravity Remote APK
+name: Build & Release Signed Android APK
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-android:
-    name: Build Signed Android APK
+    name: Build Signed APK
     runs-on: ubuntu-latest
 
     steps:
@@ -33,25 +33,16 @@ jobs:
           java-version: 17
           cache: 'gradle'
 
-      - name: Install Mobile Dependencies
+      - name: Install Dependencies
         run: |
           cd mobile
           npm install
 
-      - name: Generate Android Native Project (Expo Prebuild)
+      - name: Prepare Keystore
         run: |
-          cd mobile
-          npx expo prebuild --platform android --clean
-
-      - name: Configure Keystore & Signing
-        run: |
-          cd mobile
-          if [ -f "release.keystore" ]; then
-            cp release.keystore android/app/release.keystore
+          if [ -f "mobile/release.keystore" ]; then
+            cp mobile/release.keystore mobile/android/app/release.keystore
           fi
-          
-          # Injetar configuração de assinatura de release no build.gradle se necessário
-          sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/g' android/app/build.gradle || true
 
       - name: Build Android Release APK
         env:
@@ -74,7 +65,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Obter Versão do Projeto
+      - name: Obter Versao do Projeto
         id: version
         run: |
           VERSION=$(node -p "require('./mobile/package.json').version")
@@ -87,14 +78,14 @@ jobs:
           tag_name: latest
           name: "Antigravity Remoto v${{ steps.version.outputs.val }} - APK Oficial Android 🚀"
           body: |
-            ### 📱 Antigravity Remoto v${{ steps.version.outputs.val }} - APK Android Oficial
+            ### 📱 Antigravity Remoto v${{ steps.version.outputs.val }} - APK Android Oficial 🚀
             
-            Aplicativo móvel Android oficial (**`.apk`**) para controle remoto completo do **Google Antigravity** rodando no seu computador a partir de qualquer lugar do mundo.
+            Aplicativo móvel Android nativo oficial (**`.apk`**) para controle remoto completo do **Google Antigravity** rodando no seu computador a partir de qualquer lugar do mundo.
 
             #### 📥 Download Direto:
             - **[AntigravityRemote-release.apk](https://github.com/${{ github.repository }}/releases/download/latest/AntigravityRemote-release.apk)**: Toque para baixar e instalar no celular.
 
-            #### ✨ Funcionalidades:
+            #### ✨ Principais Funcionalidades:
             - 🌍 **Acesso Remoto Global**: Conecte ao seu PC de qualquer lugar com internet via túnel criptografado TLS (Cloudflare Tunnel).
             - 📷 **Pareamento Instantâneo por QR Code**: Basta apontar a câmera do celular para o terminal do PC.
             - 📜 **Histórico Completo de Conversas**: Veja todas as sessões anteriores sincronizadas diretamente do SQLite do Antigravity.
