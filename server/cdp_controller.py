@@ -97,6 +97,59 @@ class CDPController:
                     except Exception as e:
                         print(f"[CDP] Erro ao injetar arquivo: {e}")
 
+                # 2.5 Verificar se há um modal de pergunta interativa aberto no desktop (ask_question)
+                safe_prompt = json.dumps(prompt)
+                check_modal_expr = f"""
+                (() => {{
+                    const modal = document.querySelector('[role="dialog"], [role="alertdialog"], div[data-state="open"]');
+                    if (!modal) return 'no_modal';
+                    
+                    const answerText = {safe_prompt}.trim().toLowerCase();
+                    
+                    // A. Procurar opção selecionável com texto correspondente
+                    const allClickables = Array.from(modal.querySelectorAll('button, label, [role="radio"], [role="checkbox"], div[class*="option"], div[class*="item"]'));
+                    let clicked = false;
+                    for (const el of allClickables) {{
+                        const t = (el.innerText || '').trim().toLowerCase();
+                        if (t && (t === answerText || t.includes(answerText) || answerText.includes(t))) {{
+                            el.click();
+                            clicked = true;
+                            break;
+                        }}
+                    }}
+
+                    // B. Se não encontrou opção ou se for texto customizado, preencher o campo de texto/textarea do modal
+                    if (!clicked) {{
+                        const input = modal.querySelector('input[type="text"], textarea');
+                        if (input) {{
+                            input.focus();
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('insertText', false, {safe_prompt});
+                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    }}
+
+                    // C. Clicar no botão Submit / Confirmar do modal
+                    setTimeout(() => {{
+                        const btns = Array.from(modal.querySelectorAll('button'));
+                        const submitBtn = btns.find(b => {{
+                            const t = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
+                            return t.includes('submit') || t.includes('confirm') || t.includes('responder') || t.includes('enviar') || b.type === 'submit';
+                        }});
+                        if (submitBtn) {{
+                            submitBtn.click();
+                        }}
+                    }}, 250);
+
+                    return 'modal_answered';
+                }})()
+                """
+                modal_res = await cdp_call("Runtime.evaluate", {"expression": check_modal_expr, "returnByValue": True}, msg_id=20)
+                if modal_res.get("result", {}).get("result", {}).get("value") == "modal_answered":
+                    await asyncio.sleep(0.6)
+                    return True
+
                 # 3. Focar o campo de texto e inserir o conteúdo
                 safe_prompt = json.dumps(prompt)
                 focus_insert_expr = f"""

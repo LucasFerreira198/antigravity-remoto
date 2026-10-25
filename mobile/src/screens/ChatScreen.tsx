@@ -118,6 +118,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   // Resposta para Pergunta Interativa (ask_question)
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [customAnswer, setCustomAnswer] = useState<Record<string, string>>({});
+  const [submittedQuestions, setSubmittedQuestions] = useState<Record<string, string>>({});
 
   const flatListRef = useRef<FlatList>(null);
   const wsRef = useRef<ConversationWebSocket | null>(null);
@@ -535,22 +536,32 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
               />
 
               {/* Botão de Enviar Resposta */}
-              <TouchableOpacity
-                style={[
-                  styles.submitAnswerBtn,
-                  !selected && !customAnswer[`${stepKey}_${qIdx}`] && styles.submitAnswerBtnDisabled,
-                ]}
-                disabled={!selected && !customAnswer[`${stepKey}_${qIdx}`]}
-                onPress={() => {
-                  const finalChoice = customAnswer[`${stepKey}_${qIdx}`] || selected;
-                  if (finalChoice) {
-                    handleSend(finalChoice);
-                  }
-                }}
-              >
-                <Check size={14} color="#ffffff" style={{ marginRight: 6 }} />
-                <Text style={styles.submitAnswerBtnText}>Confirmar e Enviar Resposta</Text>
-              </TouchableOpacity>
+              {submittedQuestions[stepKey] ? (
+                <View style={styles.questionAnsweredBanner}>
+                  <Check size={14} color="#10b981" style={{ marginRight: 6 }} />
+                  <Text style={styles.questionAnsweredText}>
+                    Resposta confirmada: {submittedQuestions[stepKey]}
+                  </Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[
+                    styles.submitAnswerBtn,
+                    !selected && !customAnswer[`${stepKey}_${qIdx}`] && styles.submitAnswerBtnDisabled,
+                  ]}
+                  disabled={!selected && !customAnswer[`${stepKey}_${qIdx}`]}
+                  onPress={() => {
+                    const finalChoice = customAnswer[`${stepKey}_${qIdx}`] || selected;
+                    if (finalChoice) {
+                      setSubmittedQuestions((prev) => ({ ...prev, [stepKey]: finalChoice }));
+                      handleSend(finalChoice);
+                    }
+                  }}
+                >
+                  <Check size={14} color="#ffffff" style={{ marginRight: 6 }} />
+                  <Text style={styles.submitAnswerBtnText}>Confirmar e Enviar Resposta</Text>
+                </TouchableOpacity>
+              )}
             </View>
           );
         })}
@@ -1293,6 +1304,22 @@ const styles = StyleSheet.create({
   submitAnswerBtnText: {
     color: '#ffffff',
     fontSize: 13,
+    fontWeight: '600',
+  },
+  questionAnsweredBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderRadius: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    marginTop: 10,
+  },
+  questionAnsweredText: {
+    color: '#10b981',
+    fontSize: 12,
     fontWeight: '600',
   },
   imagePreviewWrap: {
