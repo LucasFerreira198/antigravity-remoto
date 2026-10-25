@@ -337,13 +337,13 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   card: {
-    backgroundColor: '#131d2e',
+    backgroundColor: '#121318',
     borderRadius: 20,
     width: '100%',
     maxWidth: 420,
     padding: 24,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   header: {
     flexDirection: 'row',
@@ -352,7 +352,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: '#27272a',
   },
   headerTitleRow: {
     flexDirection: 'row',
@@ -386,12 +386,12 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   versionPillOld: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#18181b',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#27272a',
   },
   versionPillOldText: {
     color: '#94a3b8',
@@ -444,11 +444,11 @@ const styles = StyleSheet.create({
   progressBarBg: {
     width: '100%',
     height: 8,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#18181b',
     borderRadius: 4,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   progressBarFill: {
     height: '100%',
@@ -512,10 +512,10 @@ const styles = StyleSheet.create({
   closeActionBtn: {
     paddingHorizontal: 24,
     paddingVertical: 10,
-    backgroundColor: '#1e293b',
+    backgroundColor: '#18181b',
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#27272a',
   },
   closeActionBtnText: {
     color: '#f8fafc',
@@ -535,12 +535,12 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   retryBtn: {
-    backgroundColor: '#1e293b',
+    backgroundColor: '#18181b',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#27272a',
   },
   retryBtnText: {
     color: '#38bdf8',

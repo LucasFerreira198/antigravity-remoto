@@ -11,6 +11,7 @@ import {
   Alert,
   Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Folder, Plus, ArrowLeft, X, HardDrive, Check } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
@@ -22,6 +23,7 @@ interface ProjectsScreenProps {
 }
 
 export default function ProjectsScreen({ onBack, onSelectProject }: ProjectsScreenProps) {
+  const insets = useSafeAreaInsets();
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
@@ -132,7 +134,8 @@ export default function ProjectsScreen({ onBack, onSelectProject }: ProjectsScre
       {/* Modal Novo Projeto */}
       <Modal visible={modalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+          <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 20) + 8 }]}>
+            <View style={styles.dragHandle} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Criar Novo Projeto</Text>
               <TouchableOpacity onPress={() => setModalVisible(false)}>
@@ -198,7 +201,14 @@ const styles = StyleSheet.create({
     borderBottomColor: '#27272a',
   },
   backBtn: {
-    padding: 6,
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#141418',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#27272a',
   },
   headerTitle: {
     color: '#fafafa',
@@ -206,9 +216,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   addBtn: {
-    padding: 8,
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: 'rgba(56, 189, 248, 0.12)',
-    borderRadius: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
   },
   listContent: {
     padding: 16,
@@ -264,16 +279,24 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
   },
+  dragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#3f3f46',
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
   modalCard: {
-    backgroundColor: '#131d2e',
+    backgroundColor: '#09090b',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -295,14 +318,14 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   input: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#141418',
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     color: '#f8fafc',
     fontSize: 14,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#27272a',
   },
   createBtn: {
     backgroundColor: '#0284c7',

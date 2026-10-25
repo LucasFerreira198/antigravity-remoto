@@ -284,7 +284,7 @@ export default function SettingsScreen({ onBack, onDisconnect }: SettingsScreenP
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0f19',
+    backgroundColor: '#09090b',
   },
   loadingContainer: {
     flex: 1,
@@ -302,14 +302,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
     backgroundColor: '#09090b',
     borderBottomWidth: 1,
     borderBottomColor: '#27272a',
   },
   backBtn: {
-    padding: 6,
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#141418',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -329,9 +337,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   saveBtn: {
-    padding: 8,
+    width: 42,
+    height: 42,
     backgroundColor: '#0284c7',
-    borderRadius: 8,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   saveBtnDisabled: {
     opacity: 0.5,
@@ -341,12 +352,12 @@ const styles = StyleSheet.create({
     paddingBottom: 120,
   },
   section: {
-    backgroundColor: '#141418',
-    borderRadius: 12,
+    backgroundColor: '#12141c',
+    borderRadius: 14,
     padding: 16,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: '#22232a',
   },
   sectionHeader: {
     flexDirection: 'row',

@@ -105,6 +105,9 @@ export default function NewConversationModal({
             },
           ]}
         >
+          {/* Drag Handle Indicator */}
+          <View style={styles.modalHandle} />
+
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerTitleRow}>
@@ -115,7 +118,7 @@ export default function NewConversationModal({
               />
               <Text style={styles.headerTitle}>Nova Conversa</Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
               <X size={20} color="#94a3b8" />
             </TouchableOpacity>
           </View>
@@ -218,17 +221,26 @@ export default function NewConversationModal({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
   },
   modalCard: {
-    backgroundColor: '#131d2e',
+    backgroundColor: '#0e0e11',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 12,
     maxHeight: '85%',
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
+  },
+  modalHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#3f3f46',
+    alignSelf: 'center',
+    marginBottom: 12,
   },
   header: {
     flexDirection: 'row',
@@ -237,33 +249,39 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: '#18181b',
   },
   headerTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   headerLogo: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    marginRight: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 8,
+    marginRight: 10,
     borderWidth: 1,
     borderColor: 'rgba(56, 189, 248, 0.3)',
   },
   headerTitle: {
-    color: '#f8fafc',
+    color: '#f4f4f5',
     fontSize: 18,
     fontWeight: '700',
+    letterSpacing: -0.2,
   },
   closeBtn: {
-    padding: 4,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#18181b',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scroll: {
     marginBottom: 16,
   },
   sectionLabel: {
-    color: '#94a3b8',
+    color: '#71717a',
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.8,
@@ -277,20 +295,20 @@ const styles = StyleSheet.create({
   },
   modelOption: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#141418',
     borderRadius: 12,
-    padding: 10,
+    padding: 12,
     marginHorizontal: 3,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#27272a',
     alignItems: 'center',
   },
   modelOptionActive: {
     borderColor: '#38bdf8',
-    backgroundColor: 'rgba(2, 132, 199, 0.2)',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
   },
   modelName: {
-    color: '#f8fafc',
+    color: '#a1a1aa',
     fontSize: 12,
     fontWeight: '700',
   },
@@ -298,7 +316,7 @@ const styles = StyleSheet.create({
     color: '#38bdf8',
   },
   modelDesc: {
-    color: '#64748b',
+    color: '#71717a',
     fontSize: 9,
     marginTop: 2,
     textAlign: 'center',
@@ -310,20 +328,20 @@ const styles = StyleSheet.create({
   projectOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0f172a',
+    backgroundColor: '#141418',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
     marginRight: 8,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#27272a',
   },
   projectOptionActive: {
     backgroundColor: '#0284c7',
     borderColor: '#38bdf8',
   },
   projectName: {
-    color: '#94a3b8',
+    color: '#a1a1aa',
     fontSize: 12,
     fontWeight: '600',
   },
@@ -331,14 +349,14 @@ const styles = StyleSheet.create({
     color: '#ffffff',
   },
   input: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#141418',
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    color: '#f8fafc',
+    color: '#f4f4f5',
     fontSize: 14,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#27272a',
   },
   textArea: {
     height: 100,
@@ -347,13 +365,19 @@ const styles = StyleSheet.create({
   submitBtn: {
     backgroundColor: '#0284c7',
     height: 50,
-    borderRadius: 12,
+    borderRadius: 14,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#0284c7',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
   },
   submitBtnDisabled: {
-    opacity: 0.5,
+    opacity: 0.45,
+    backgroundColor: '#27272a',
   },
   submitBtnText: {
     color: '#ffffff',

@@ -170,6 +170,16 @@ export default function ConversationsScreen({
                   ? 'Nenhum resultado corresponde à sua pesquisa.'
                   : 'Inicie uma nova tarefa no seu PC tocando no botão "+ Nova Conversa" abaixo.'}
               </Text>
+              {!searchQuery && (
+                <TouchableOpacity
+                  style={styles.emptyNewBtn}
+                  onPress={onOpenNewConversation}
+                  activeOpacity={0.8}
+                >
+                  <Plus size={16} color="#ffffff" style={{ marginRight: 6 }} />
+                  <Text style={styles.emptyNewBtnText}>Nova Conversa</Text>
+                </TouchableOpacity>
+              )}
             </View>
           }
           renderItem={({ item }) => {
@@ -333,20 +343,41 @@ const styles = StyleSheet.create({
     color: '#71717a',
     textAlign: 'center',
     lineHeight: 18,
+    marginBottom: 16,
+  },
+  emptyNewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+  },
+  emptyNewBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
   },
   convoCard: {
-    backgroundColor: '#141418',
-    borderRadius: 12,
-    padding: 14,
+    backgroundColor: '#121318',
+    borderRadius: 14,
+    padding: 15,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: '#22232a',
   },
   convoCardActive: {
-    borderColor: 'rgba(56, 189, 248, 0.5)',
+    borderColor: 'rgba(56, 189, 248, 0.6)',
     borderLeftWidth: 3,
     borderLeftColor: '#38bdf8',
-    backgroundColor: '#181924',
+    backgroundColor: '#161922',
+    shadowColor: '#38bdf8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 3,
   },
   cardHeader: {
     flexDirection: 'row',

@@ -785,19 +785,28 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             </TouchableOpacity>
           )}
 
-          {/* Seletor de Modelo */}
+          {/* Seletor de Modelo com Tokens Integrados */}
           <TouchableOpacity
             style={styles.modelHeaderBtn}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               setShowModelModal(true);
             }}
+            onLongPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              setShowTokensModal(true);
+            }}
             activeOpacity={0.7}
           >
-            <Bot size={13} color="#a855f7" style={{ marginRight: 3 }} />
+            <Bot size={13} color="#c084fc" style={{ marginRight: 3 }} />
             <Text style={styles.modelHeaderText} numberOfLines={1}>
               {activeModelShortName}
             </Text>
+            {tokenStats && tokenStats.current_context_tokens > 0 && (
+              <Text style={styles.modelTokensSub}>
+                •{(tokenStats.current_context_tokens / 1000).toFixed(0)}k
+              </Text>
+            )}
           </TouchableOpacity>
 
           {/* Badge de Tarefas em Segundo Plano */}
@@ -808,6 +817,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 setShowTasksModal(true);
               }}
+              activeOpacity={0.7}
             >
               <Terminal size={15} color="#4ade80" />
               <View style={styles.tasksHeaderBadge}>
@@ -816,29 +826,14 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             </TouchableOpacity>
           )}
 
-          {/* Badge de Tokens & Modelo */}
-          {tokenStats && tokenStats.current_context_tokens > 0 && (
-            <TouchableOpacity
-              style={styles.tokensHeaderBtn}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setShowTokensModal(true);
-              }}
-            >
-              <Cpu size={15} color="#38bdf8" />
-              <Text style={styles.tokensHeaderText}>
-                {(tokenStats.current_context_tokens / 1000).toFixed(0)}k
-              </Text>
-            </TouchableOpacity>
-          )}
-
           {/* Botão de Artefatos */}
           {artifacts.length > 0 && (
             <TouchableOpacity
               style={[styles.artifactsBtn, hasPendingPlan && styles.artifactsBtnHighlight]}
               onPress={() => onOpenArtifacts(conversation.id)}
+              activeOpacity={0.7}
             >
-              <FileText size={18} color={hasPendingPlan ? '#34d399' : '#38bdf8'} />
+              <FileText size={17} color={hasPendingPlan ? '#34d399' : '#38bdf8'} />
               <View style={[styles.artifactsBadge, hasPendingPlan && { backgroundColor: '#059669' }]}>
                 <Text style={styles.artifactsBadgeText}>{artifacts.length}</Text>
               </View>
@@ -1173,9 +1168,25 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         </View>
       )}
 
-      {/* Sugestões Inteligentes de Comandos Contextuais */}
-      {suggestions.length > 0 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.suggestionsScroll}>
+      {/* Barra Unificada de Ações Rápidas & Sugestões */}
+      <View style={styles.quickActionsContainer}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.quickActionsContent}
+        >
+          {['/plan', '/goal', '/compact', '/browser'].map((cmd) => (
+            <TouchableOpacity
+              key={cmd}
+              style={styles.slashChip}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setInputPrompt((prev) => (prev ? `${cmd} ${prev}` : `${cmd} `));
+              }}
+            >
+              <Text style={styles.slashChipText}>{cmd}</Text>
+            </TouchableOpacity>
+          ))}
           {suggestions.map((sug) => {
             const isHighlight = sug.highlight;
             return (
@@ -1205,22 +1216,6 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             );
           })}
         </ScrollView>
-      )}
-
-      {/* Barra de Ações Rápidas (Slash Commands) */}
-      <View style={styles.slashCommandsBar}>
-        {['/plan', '/goal', '/compact', '/browser'].map((cmd) => (
-          <TouchableOpacity
-            key={cmd}
-            style={styles.slashChip}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setInputPrompt((prev) => (prev ? `${cmd} ${prev}` : `${cmd} `));
-            }}
-          >
-            <Text style={styles.slashChipText}>{cmd}</Text>
-          </TouchableOpacity>
-        ))}
       </View>
 
       {/* Input de Envio Shadcn com Foco Inteligente */}
@@ -1938,90 +1933,102 @@ const styles = StyleSheet.create({
   queuedRemoveBtn: {
     padding: 3,
   },
-  slashCommandsBar: {
-    flexDirection: 'row',
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    gap: 8,
+  quickActionsContainer: {
+    paddingVertical: 5,
+    backgroundColor: '#09090b',
+  },
+  quickActionsContent: {
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    gap: 6,
   },
   slashChip: {
-    backgroundColor: '#18181b',
+    backgroundColor: '#141418',
     borderWidth: 1,
     borderColor: '#27272a',
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
   },
   slashChipText: {
-    color: '#a1a1aa',
+    color: '#38bdf8',
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 8,
-    backgroundColor: '#0d1117',
+    backgroundColor: '#0e1017',
     borderTopWidth: 1,
-    borderTopColor: '#27272a',
+    borderTopColor: '#1e212b',
   },
   attachBtn: {
-    padding: 10,
-    borderRadius: 10,
-    backgroundColor: '#18181b',
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#151720',
     borderWidth: 1,
-    borderColor: '#27272a',
-    marginRight: 8,
+    borderColor: '#252836',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
   },
   input: {
     flex: 1,
-    minHeight: 40,
+    minHeight: 42,
     maxHeight: 120,
-    backgroundColor: '#18181b',
+    backgroundColor: '#151720',
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: '#252836',
     borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 9,
     color: '#fafafa',
     fontSize: 14,
   },
   sendBtn: {
-    padding: 10,
+    width: 42,
+    height: 42,
     backgroundColor: '#0284c7',
-    borderRadius: 10,
-    marginLeft: 8,
+    borderRadius: 12,
+    marginLeft: 6,
     justifyContent: 'center',
     alignItems: 'center',
   },
   sendBtnDisabled: {
-    opacity: 0.4,
+    opacity: 0.35,
   },
   scrollBottomBtn: {
     position: 'absolute',
     bottom: 95,
     right: 20,
     backgroundColor: '#0284c7',
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 4,
+    elevation: 5,
+    shadowColor: '#38bdf8',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
     justifyContent: 'flex-end',
   },
   pickerModalContent: {
-    backgroundColor: '#18181b',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: '#12141c',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: '#252836',
   },
   pickerModalTitle: {
     color: '#fafafa',
@@ -2034,7 +2041,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#27272a',
+    borderBottomColor: '#252836',
   },
   pickerOptionText: {
     color: '#fafafa',
@@ -2044,7 +2051,7 @@ const styles = StyleSheet.create({
   headerRightActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   stopHeaderBtn: {
     flexDirection: 'row',
@@ -2064,20 +2071,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 8,
     paddingVertical: 6,
-    backgroundColor: '#18181b',
+    backgroundColor: '#151720',
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#581c87',
+    borderColor: 'rgba(192, 132, 252, 0.35)',
   },
   modelHeaderText: {
-    color: '#d8b4fe',
+    color: '#e9d5ff',
     fontSize: 11,
     fontWeight: '700',
-    maxWidth: 75,
+    maxWidth: 68,
+  },
+  modelTokensSub: {
+    color: '#38bdf8',
+    fontSize: 10,
+    fontWeight: '700',
+    marginLeft: 3,
   },
   stopInputBtn: {
-    width: 40,
-    height: 40,
+    width: 42,
+    height: 42,
     borderRadius: 10,
     backgroundColor: '#dc2626',
     justifyContent: 'center',
@@ -2232,12 +2245,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   skillsBtn: {
-    padding: 10,
-    borderRadius: 10,
-    backgroundColor: '#18181b',
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#151720',
     borderWidth: 1,
-    borderColor: '#27272a',
-    marginRight: 8,
+    borderColor: '#252836',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
   },
   queuedWaitingPill: {
     flexDirection: 'row',
@@ -2370,52 +2386,82 @@ const markdownStyles = StyleSheet.create({
   },
   heading1: {
     color: '#38bdf8',
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: '700',
     marginTop: 10,
     marginBottom: 4,
   },
   heading2: {
     color: '#60a5fa',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     marginTop: 8,
     marginBottom: 4,
   },
   heading3: {
     color: '#93c5fd',
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '600',
     marginTop: 6,
     marginBottom: 2,
   },
   code_inline: {
-    backgroundColor: '#1e293b',
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
     color: '#38bdf8',
     borderRadius: 4,
     paddingHorizontal: 5,
     paddingVertical: 2,
     fontSize: 12,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   code_block: {
-    backgroundColor: '#020617',
+    backgroundColor: '#070a12',
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#1e2433',
     borderRadius: 8,
     padding: 10,
     marginVertical: 6,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    color: '#38bdf8',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: '#f8fafc',
+    fontSize: 12,
+  },
+  fence: {
+    backgroundColor: '#070a12',
+    borderWidth: 1,
+    borderColor: '#1e2433',
+    borderRadius: 8,
+    padding: 10,
+    marginVertical: 6,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: '#f8fafc',
     fontSize: 12,
   },
   blockquote: {
-    backgroundColor: '#0c1a2e',
+    backgroundColor: 'rgba(56, 189, 248, 0.06)',
     borderLeftColor: '#38bdf8',
     borderLeftWidth: 3,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    marginVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginVertical: 6,
+    borderRadius: 4,
+  },
+  table: {
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 6,
+    marginVertical: 6,
+  },
+  th: {
+    backgroundColor: '#18181b',
+    padding: 6,
+    fontWeight: '700',
+    color: '#f8fafc',
+  },
+  td: {
+    padding: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#27272a',
+    color: '#e2e8f0',
   },
   link: {
     color: '#38bdf8',

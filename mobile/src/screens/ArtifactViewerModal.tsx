@@ -117,6 +117,7 @@ export default function ArtifactViewerModal({
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+          <View style={styles.dragHandle} />
           {/* Header */}
           <View style={styles.header}>
             {selectedArtifact ? (
@@ -252,23 +253,31 @@ export default function ArtifactViewerModal({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
   },
+  dragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#3f3f46',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
   modalCard: {
-    backgroundColor: '#131d2e',
+    backgroundColor: '#09090b',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 16,
     height: '85%',
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   proceedFooter: {
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#1e293b',
-    backgroundColor: '#131d2e',
+    borderTopColor: '#27272a',
+    backgroundColor: '#12141c',
   },
   proceedBtn: {
     flexDirection: 'row',
@@ -364,14 +373,14 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   artifactCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#141418',
     borderRadius: 14,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#27272a',
   },
   iconWrap: {
     width: 42,

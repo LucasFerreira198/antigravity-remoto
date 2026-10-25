@@ -137,6 +137,7 @@ export default function SkillsCatalogModal({
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
         <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+          <View style={styles.dragHandle} />
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
@@ -242,11 +243,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#09090b',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    paddingTop: 16,
+    paddingTop: 12,
     paddingHorizontal: 16,
     height: '86%',
     borderWidth: 1,
     borderColor: '#27272a',
+  },
+  dragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#3f3f46',
+    alignSelf: 'center',
+    marginBottom: 12,
   },
   header: {
     flexDirection: 'row',
