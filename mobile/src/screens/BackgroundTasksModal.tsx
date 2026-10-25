@@ -8,7 +8,9 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Platform,
+  BackHandler,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, Terminal, Square, RefreshCw, CheckCircle2, AlertCircle, Clock } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
@@ -25,10 +27,21 @@ export default function BackgroundTasksModal({
   conversationId,
   onClose,
 }: BackgroundTasksModalProps) {
+  const insets = useSafeAreaInsets();
   const [tasks, setTasks] = useState<BackgroundTask[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedTask, setSelectedTask] = useState<BackgroundTask | null>(null);
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    const onBack = () => {
+      onClose();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+    return () => sub.remove();
+  }, [visible, onClose]);
 
   useEffect(() => {
     let interval: any;
@@ -85,7 +98,7 @@ export default function BackgroundTasksModal({
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
-        <View style={styles.modalCard}>
+        <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>

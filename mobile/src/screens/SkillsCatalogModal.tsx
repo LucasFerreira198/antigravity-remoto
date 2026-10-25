@@ -1,15 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
   View,
   Modal,
-  ScrollView,
+  FlatList,
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
+  BackHandler,
+  Platform,
 } from 'react-native';
-import { X, Sparkles, Search, Check, Globe, Flame, Bot, Compass, ArrowRight } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { X, Sparkles, Search, Check, Globe, Flame, Bot, Compass, ArrowRight, Wrench, Shield, Code2, Cloud, Palette, Share2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { api } from '../services/api';
 import { Skill } from '../types';
@@ -25,6 +28,7 @@ export default function SkillsCatalogModal({
   onClose,
   onSelectSkill,
 }: SkillsCatalogModalProps) {
+  const insets = useSafeAreaInsets();
   const [skills, setSkills] = useState<Skill[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -35,6 +39,16 @@ export default function SkillsCatalogModal({
       loadSkills();
     }
   }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const onBack = () => {
+      onClose();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+    return () => sub.remove();
+  }, [visible, onClose]);
 
   const loadSkills = async () => {
     setIsLoading(true);
@@ -48,48 +62,95 @@ export default function SkillsCatalogModal({
     }
   };
 
-  const categories = ['Todas', ...Array.from(new Set(skills.map((s) => s.category)))];
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    skills.forEach((s) => {
+      if (s.category) set.add(s.category);
+    });
+    return ['Todas', ...Array.from(set)];
+  }, [skills]);
 
-  const filteredSkills = skills.filter((s) => {
-    const matchesCategory = selectedCategory === 'Todas' || s.category === selectedCategory;
-    const matchesSearch =
-      s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.description.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesCategory && matchesSearch;
-  });
+  const filteredSkills = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return skills.filter((s) => {
+      const matchesCategory = selectedCategory === 'Todas' || s.category === selectedCategory;
+      if (!matchesCategory) return false;
+      if (!q) return true;
+      return (
+        s.name.toLowerCase().includes(q) ||
+        s.description.toLowerCase().includes(q) ||
+        s.folder_name.toLowerCase().includes(q)
+      );
+    });
+  }, [skills, selectedCategory, searchQuery]);
 
   const getCategoryIcon = (cat: string) => {
-    if (cat.includes('Chrome') || cat.includes('DevTools')) return <Globe size={14} color="#38bdf8" />;
-    if (cat.includes('Firebase')) return <Flame size={14} color="#f59e0b" />;
-    if (cat.includes('Gemini')) return <Bot size={14} color="#a855f7" />;
-    return <Compass size={14} color="#22c55e" />;
+    const c = (cat || '').toLowerCase();
+    if (c.includes('chrome') || c.includes('devtools')) return <Globe size={13} color="#38bdf8" />;
+    if (c.includes('firebase')) return <Flame size={13} color="#f59e0b" />;
+    if (c.includes('gemini') || c.includes('ia') || c.includes('agente')) return <Bot size={13} color="#a855f7" />;
+    if (c.includes('desenvolvimento') || c.includes('code')) return <Code2 size={13} color="#3b82f6" />;
+    if (c.includes('teste') || c.includes('segurança')) return <Shield size={13} color="#ef4444" />;
+    if (c.includes('cloud') || c.includes('devops')) return <Cloud size={13} color="#06b6d4" />;
+    if (c.includes('design') || c.includes('ui')) return <Palette size={13} color="#ec4899" />;
+    if (c.includes('marketing') || c.includes('conteúdo')) return <Share2 size={13} color="#f97316" />;
+    return <Compass size={13} color="#22c55e" />;
   };
 
-  const handleUseSkill = (skill: Skill) => {
+  const handleUseSkill = useCallback((skill: Skill) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const prompt = `Use a skill ${skill.name} para `;
     onSelectSkill(prompt);
     onClose();
-  };
+  }, [onSelectSkill, onClose]);
+
+  const renderSkillItem = useCallback(({ item }: { item: Skill }) => (
+    <TouchableOpacity
+      style={styles.skillCard}
+      onPress={() => handleUseSkill(item)}
+      activeOpacity={0.7}
+    >
+      <View style={styles.skillCardTop}>
+        <View style={styles.skillCategoryBadge}>
+          {getCategoryIcon(item.category)}
+          <Text style={styles.skillCategoryText} numberOfLines={1} ellipsizeMode="tail">
+            {item.category}
+          </Text>
+        </View>
+        <View style={styles.usePill}>
+          <Text style={styles.usePillText}>Usar no Chat</Text>
+          <ArrowRight size={11} color="#38bdf8" style={{ marginLeft: 3 }} />
+        </View>
+      </View>
+
+      <Text style={styles.skillName} numberOfLines={2}>
+        {item.name}
+      </Text>
+      
+      <Text style={styles.skillDesc} numberOfLines={3} ellipsizeMode="tail">
+        {item.description}
+      </Text>
+    </TouchableOpacity>
+  ), [handleUseSkill]);
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
-        <View style={styles.modalCard}>
+        <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
               <View style={styles.headerIconWrap}>
                 <Sparkles size={18} color="#38bdf8" />
               </View>
-              <View>
-                <Text style={styles.headerTitle}>Catálogo de Skills</Text>
-                <Text style={styles.headerSub}>
-                  {skills.length > 0 ? `${skills.length} ferramentas e agentes no seu PC` : 'Carregando skills...'}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.headerTitle} numberOfLines={1}>Catálogo de Skills</Text>
+                <Text style={styles.headerSub} numberOfLines={1}>
+                  {skills.length > 0 ? `${skills.length.toLocaleString('pt-BR')} ferramentas e agentes instalados` : 'Carregando catálogo...'}
                 </Text>
               </View>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <TouchableOpacity onPress={onClose} style={styles.closeBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
               <X size={20} color="#94a3b8" />
             </TouchableOpacity>
           </View>
@@ -106,30 +167,41 @@ export default function SkillsCatalogModal({
               autoCapitalize="none"
               clearButtonMode="while-editing"
             />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <X size={15} color="#71717a" />
+              </TouchableOpacity>
+            )}
           </View>
 
-          {/* Categorias */}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
-            {categories.map((cat) => {
-              const isSelected = selectedCategory === cat;
-              return (
-                <TouchableOpacity
-                  key={cat}
-                  style={[styles.categoryChip, isSelected && styles.categoryChipSelected]}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setSelectedCategory(cat);
-                  }}
-                >
-                  <Text style={[styles.categoryChipText, isSelected && styles.categoryChipTextSelected]}>
-                    {cat}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          {/* Categorias Horizontais */}
+          <View style={styles.categoryContainer}>
+            <FlatList
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              data={categories}
+              keyExtractor={(cat) => cat}
+              contentContainerStyle={styles.categoryList}
+              renderItem={({ item: cat }) => {
+                const isSelected = selectedCategory === cat;
+                return (
+                  <TouchableOpacity
+                    style={[styles.categoryChip, isSelected && styles.categoryChipSelected]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setSelectedCategory(cat);
+                    }}
+                  >
+                    <Text style={[styles.categoryChipText, isSelected && styles.categoryChipTextSelected]}>
+                      {cat}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
 
-          {/* Lista de Skills */}
+          {/* Lista de Skills Virtualizada */}
           {isLoading ? (
             <View style={styles.centerLoading}>
               <ActivityIndicator size="large" color="#38bdf8" />
@@ -142,32 +214,17 @@ export default function SkillsCatalogModal({
               <Text style={styles.emptyDesc}>Tente outros termos de busca ou selecione outra categoria.</Text>
             </View>
           ) : (
-            <ScrollView contentContainerStyle={styles.skillsList} showsVerticalScrollIndicator={false}>
-              {filteredSkills.map((skill) => (
-                <TouchableOpacity
-                  key={skill.name}
-                  style={styles.skillCard}
-                  onPress={() => handleUseSkill(skill)}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.skillCardTop}>
-                    <View style={styles.skillCategoryBadge}>
-                      {getCategoryIcon(skill.category)}
-                      <Text style={styles.skillCategoryText}>{skill.category}</Text>
-                    </View>
-                    <View style={styles.usePill}>
-                      <Text style={styles.usePillText}>Usar no Chat</Text>
-                      <ArrowRight size={12} color="#38bdf8" style={{ marginLeft: 4 }} />
-                    </View>
-                  </View>
-
-                  <Text style={styles.skillName}>{skill.name}</Text>
-                  <Text style={styles.skillDesc} numberOfLines={3}>
-                    {skill.description}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+            <FlatList
+              data={filteredSkills}
+              keyExtractor={(item) => item.path || item.name}
+              renderItem={renderSkillItem}
+              contentContainerStyle={styles.skillsList}
+              showsVerticalScrollIndicator={false}
+              initialNumToRender={15}
+              maxToRenderPerBatch={20}
+              windowSize={7}
+              removeClippedSubviews={Platform.OS === 'android'}
+            />
           )}
         </View>
       </View>
@@ -185,8 +242,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#09090b',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    padding: 16,
-    height: '84%',
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    height: '86%',
     borderWidth: 1,
     borderColor: '#27272a',
   },
@@ -202,6 +260,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    marginRight: 8,
   },
   headerIconWrap: {
     width: 36,
@@ -223,7 +282,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   closeBtn: {
-    padding: 8,
+    padding: 6,
   },
   searchBarWrap: {
     flexDirection: 'row',
@@ -240,20 +299,23 @@ const styles = StyleSheet.create({
     flex: 1,
     color: '#ffffff',
     fontSize: 14,
+    paddingVertical: 0,
   },
-  categoryScroll: {
-    maxHeight: 46,
+  categoryContainer: {
     marginTop: 10,
-    marginBottom: 6,
+    marginBottom: 8,
+  },
+  categoryList: {
+    paddingVertical: 2,
+    gap: 8,
   },
   categoryChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+    paddingHorizontal: 13,
+    paddingVertical: 6,
     backgroundColor: '#141418',
     borderRadius: 20,
     borderWidth: 1,
     borderColor: '#27272a',
-    marginRight: 8,
     alignSelf: 'center',
   },
   categoryChipSelected: {
@@ -298,8 +360,8 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   skillsList: {
-    paddingTop: 8,
-    paddingBottom: 24,
+    paddingTop: 4,
+    paddingBottom: 20,
     gap: 10,
   },
   skillCard: {
@@ -323,6 +385,8 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 6,
     gap: 5,
+    flexShrink: 1,
+    marginRight: 8,
   },
   skillCategoryText: {
     color: '#e4e4e7',
@@ -336,6 +400,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
+    flexShrink: 0,
   },
   usePillText: {
     color: '#38bdf8',
@@ -346,11 +411,13 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 15,
     fontWeight: '700',
-    marginBottom: 4,
+    marginBottom: 5,
+    flexWrap: 'wrap',
   },
   skillDesc: {
     color: '#a1a1aa',
     fontSize: 12.5,
     lineHeight: 18,
+    flexWrap: 'wrap',
   },
 });

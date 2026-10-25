@@ -60,6 +60,20 @@ export interface Artifact {
   is_markdown: boolean;
   is_image: boolean;
   request_feedback?: boolean;
+  is_plan?: boolean;
+  is_executed?: boolean;
+}
+
+export interface ModelOption {
+  name: string;
+  badge: string;
+  text?: string;
+  id?: string;
+}
+
+export interface ModelInfo {
+  current_model: string;
+  available_models: ModelOption[];
 }
 
 export interface BackgroundTask {

@@ -10,8 +10,10 @@ import {
   Image,
   Clipboard,
   Platform,
+  BackHandler,
 } from 'react-native';
-import { X, FileText, Copy, Check, ArrowLeft, Image as ImageIcon, Play } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { X, FileText, Copy, Check, ArrowLeft, Image as ImageIcon, Play, CheckCircle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Markdown from 'react-native-markdown-display';
 import { api } from '../services/api';
@@ -30,6 +32,7 @@ export default function ArtifactViewerModal({
   onClose,
   onProceedSent,
 }: ArtifactViewerModalProps) {
+  const insets = useSafeAreaInsets();
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [contentData, setContentData] = useState<any>(null);
@@ -43,6 +46,21 @@ export default function ArtifactViewerModal({
       loadArtifacts();
     }
   }, [visible, conversationId]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const onBackPress = () => {
+      if (selectedArtifact) {
+        setSelectedArtifact(null);
+        setContentData(null);
+        return true;
+      }
+      onClose();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [visible, selectedArtifact]);
 
   const loadArtifacts = async () => {
     setIsLoadingList(true);
@@ -96,9 +114,9 @@ export default function ArtifactViewerModal({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
-        <View style={styles.modalCard}>
+        <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
           {/* Header */}
           <View style={styles.header}>
             {selectedArtifact ? (
@@ -160,7 +178,7 @@ export default function ArtifactViewerModal({
                 </ScrollView>
               )}
 
-              {(selectedArtifact?.request_feedback || contentData?.request_feedback || selectedArtifact?.name.toLowerCase().includes('plan')) && (
+              {selectedArtifact?.request_feedback ? (
                 <View style={styles.proceedFooter}>
                   <TouchableOpacity
                     style={[styles.proceedBtn, isProceeding && styles.proceedBtnDisabled]}
@@ -178,7 +196,12 @@ export default function ArtifactViewerModal({
                     </Text>
                   </TouchableOpacity>
                 </View>
-              )}
+              ) : selectedArtifact?.is_plan || selectedArtifact?.name.toLowerCase().includes('plan') ? (
+                <View style={styles.executedPlanFooter}>
+                  <CheckCircle size={16} color="#10b981" style={{ marginRight: 6 }} />
+                  <Text style={styles.executedPlanText}>Plano já executado / aprovado</Text>
+                </View>
+              ) : null}
             </View>
           ) : (
             <ScrollView contentContainerStyle={styles.listScroll}>
@@ -268,6 +291,22 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     letterSpacing: 0.3,
+  },
+  executedPlanFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  executedPlanText: {
+    color: '#10b981',
+    fontSize: 13,
+    fontWeight: '600',
   },
   header: {
     flexDirection: 'row',

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ActivityIndicator, BackHandler } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
@@ -55,6 +55,37 @@ export default function App() {
       sub.remove();
     };
   }, []);
+
+  // Gerenciamento do botão voltar físico/gesto do Android para não fechar o app
+  useEffect(() => {
+    const onBackPress = () => {
+      if (updateModalVisible) {
+        setUpdateModalVisible(false);
+        return true;
+      }
+      if (artifactModalData.visible) {
+        setArtifactModalData({ visible: false, conversationId: '' });
+        return true;
+      }
+      if (newConvoModalVisible) {
+        setNewConvoModalVisible(false);
+        return true;
+      }
+      if (currentScreen === 'chat') {
+        setSelectedConversation(null);
+        setCurrentScreen('conversations');
+        return true;
+      }
+      if (currentScreen === 'projects' || currentScreen === 'settings') {
+        setCurrentScreen('conversations');
+        return true;
+      }
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [currentScreen, updateModalVisible, artifactModalData.visible, newConvoModalVisible]);
 
   // Monitor em segundo plano para notificar quando tarefas terminam enquanto o usuário está em outra tela
   useEffect(() => {

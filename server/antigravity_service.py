@@ -6,6 +6,7 @@ import subprocess
 import uuid
 import datetime
 import threading
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
 
@@ -14,6 +15,8 @@ from .config import AppPaths
 class AntigravityService:
     def __init__(self):
         self.paths = AppPaths()
+        self._skills_cache: Optional[List[Dict[str, Any]]] = None
+        self._skills_cache_time: float = 0.0
 
     def get_db_connection(self):
         """Abre conexão somente leitura com o banco de resumos de conversas."""
@@ -369,12 +372,30 @@ class AntigravityService:
         return queued
 
     def list_artifacts(self, conversation_id: str) -> List[Dict[str, Any]]:
-        """Lista os artefatos gerados na pasta brain da conversa."""
+        """Lista os artefatos gerados na pasta brain da conversa, identificando se algum plano ainda aguarda Proceed."""
         brain_dir = self.paths.BRAIN_DIR / conversation_id
         if not brain_dir.exists():
             return []
         
+        # 1. Obter timestamp da última mensagem enviada pelo usuário
+        last_user_time = 0.0
+        transcript_file = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
+        if transcript_file.exists():
+            try:
+                with open(transcript_file, "r", encoding="utf-8", errors="replace") as tf:
+                    for line in reversed(tf.readlines()):
+                        if '"type": "USER_INPUT"' in line or '"type":"USER_INPUT"' in line:
+                            data = json.loads(line)
+                            created_at = data.get("created_at")
+                            if created_at:
+                                dt = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                                last_user_time = dt.timestamp()
+                                break
+            except Exception:
+                pass
+
         artifacts = []
+        raw_items = []
         for item in brain_dir.iterdir():
             if item.name.startswith(".") or item.name == "scratch":
                 continue
@@ -390,20 +411,59 @@ class AntigravityService:
                     except Exception:
                         pass
                 
-                is_req_feedback = bool(
-                    meta_info.get("RequestFeedback", meta_info.get("requestFeedback", False))
-                    or ("plan" in item.name.lower())
-                )
-                artifacts.append({
-                    "name": item.name,
-                    "size": item.stat().st_size,
-                    "modified_at": datetime.datetime.fromtimestamp(item.stat().st_mtime).isoformat(),
-                    "summary": meta_info.get("Summary", meta_info.get("summary", "")),
-                    "user_facing": meta_info.get("UserFacing", meta_info.get("userFacing", True)),
-                    "is_markdown": item.suffix.lower() in [".md", ".markdown", ".txt"],
-                    "is_image": item.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp", ".svg"],
-                    "request_feedback": is_req_feedback
+                art_mtime = item.stat().st_mtime
+                meta_updated = meta_info.get("updatedAt", meta_info.get("updated_at"))
+                if meta_updated:
+                    try:
+                        dt_meta = datetime.datetime.fromisoformat(meta_updated.replace("Z", "+00:00"))
+                        art_mtime = max(art_mtime, dt_meta.timestamp())
+                    except Exception:
+                        pass
+
+                is_plan = "plan" in item.name.lower() or "plano" in item.name.lower()
+                explicit_req_feedback = bool(meta_info.get("RequestFeedback", meta_info.get("requestFeedback", False)))
+                
+                raw_items.append({
+                    "item": item,
+                    "meta_info": meta_info,
+                    "art_mtime": art_mtime,
+                    "is_plan": is_plan,
+                    "explicit_req_feedback": explicit_req_feedback
                 })
+
+        # Identificar o plano mais recente
+        plan_items = [r for r in raw_items if r["is_plan"] or r["explicit_req_feedback"]]
+        latest_plan_item = max(plan_items, key=lambda x: x["art_mtime"]) if plan_items else None
+
+        for r in raw_items:
+            item = r["item"]
+            meta_info = r["meta_info"]
+            art_mtime = r["art_mtime"]
+            is_plan = r["is_plan"]
+
+            # Um plano SÓ aguarda feedback (Proceed) se:
+            # 1. For o plano MAIS RECENTE da conversa
+            # 2. Foi criado ou atualizado APÓS o último input do usuário (margem de 1s)
+            # 3. Teve flag de feedback ou é um documento de plano
+            is_pending = False
+            if latest_plan_item and r == latest_plan_item:
+                if (r["explicit_req_feedback"] or is_plan) and (art_mtime > (last_user_time + 1.0)):
+                    is_pending = True
+
+            artifacts.append({
+                "name": item.name,
+                "size": item.stat().st_size,
+                "modified_at": datetime.datetime.fromtimestamp(art_mtime).isoformat(),
+                "summary": meta_info.get("Summary", meta_info.get("summary", "")),
+                "user_facing": meta_info.get("UserFacing", meta_info.get("userFacing", True)),
+                "is_markdown": item.suffix.lower() in [".md", ".markdown", ".txt"],
+                "is_image": item.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp", ".svg"],
+                "request_feedback": is_pending,
+                "is_plan": is_plan,
+                "is_executed": not is_pending if is_plan else False
+            })
+
+        artifacts.sort(key=lambda a: a["modified_at"], reverse=True)
         return artifacts
 
     def get_artifact_content(self, conversation_id: str, filename: str) -> Optional[Dict[str, Any]]:
@@ -737,14 +797,20 @@ class AntigravityService:
         }
 
     def list_installed_skills(self) -> List[Dict[str, Any]]:
-        """Descobre todas as skills instaladas no computador com categorias e descrições."""
+        """Descobre todas as skills instaladas no computador (builtin, plugins, custom e community em ~/.agents/skills) com cache."""
+        now = time.time()
+        if self._skills_cache is not None and (now - self._skills_cache_time) < 60.0:
+            return self._skills_cache
+
         skills: List[Dict[str, Any]] = []
-        
         search_dirs = [
             (self.paths.ANTIGRAVITY_DIR / "builtin" / "skills", "Antigravity"),
+            (self.paths.ANTIGRAVITY_DIR / "skills", "Antigravity Custom"),
             (self.paths.CONFIG_DIR / "plugins" / "chrome-devtools-plugin" / "skills", "Chrome DevTools"),
             (self.paths.CONFIG_DIR / "plugins" / "firebase" / "skills", "Firebase"),
             (self.paths.CONFIG_DIR / "plugins" / "gemini-api" / "skills", "Gemini AI"),
+            (Path.home() / ".agents" / "skills", "Community"),
+            (Path.home() / ".agent" / "skills", "Community"),
         ]
 
         plugins_root = self.paths.CONFIG_DIR / "plugins"
@@ -755,8 +821,26 @@ class AntigravityService:
                     if sk_dir.exists():
                         search_dirs.append((sk_dir, plugin_dir.name.replace("-", " ").title()))
 
+        def categorize(name: str, base_cat: str) -> str:
+            if base_cat != "Community":
+                return base_cat
+            n = name.lower()
+            if any(k in n for k in ["ai", "claude", "gemini", "gpt", "agent", "llm", "prompt", "reasoning", "orchestrat"]):
+                return "Agentes & IA"
+            if any(k in n for k in ["test", "qa", "jest", "pytest", "cypress", "playwright", "audit", "security", "exploit", "pentest"]):
+                return "Testes & Segurança"
+            if any(k in n for k in ["code", "dev", "react", "vue", "backend", "frontend", "typescript", "python", "node", "api", "clean-code", "refactor"]):
+                return "Desenvolvimento"
+            if any(k in n for k in ["cloud", "aws", "azure", "docker", "k8s", "linux", "windows", "devops", "deploy"]):
+                return "DevOps & Cloud"
+            if any(k in n for k in ["design", "ui", "ux", "css", "tailwind", "figma", "theme"]):
+                return "Design & UI"
+            if any(k in n for k in ["seo", "marketing", "youtube", "article", "copy", "blog", "social"]):
+                return "Marketing & Conteúdo"
+            return "Comunidade"
+
         seen_names = set()
-        for base_dir, category in search_dirs:
+        for base_dir, default_cat in search_dirs:
             if not base_dir.exists():
                 continue
             for skill_path in base_dir.iterdir():
@@ -766,33 +850,37 @@ class AntigravityService:
                 if not skill_md.exists():
                     continue
                 
-                skill_name = skill_path.name
-                if skill_name in seen_names:
+                folder_name = skill_path.name
+                if folder_name in seen_names:
                     continue
-                seen_names.add(skill_name)
+                seen_names.add(folder_name)
 
                 desc = ""
+                display_name = folder_name
                 try:
                     with open(skill_md, "r", encoding="utf-8", errors="replace") as f:
-                        content = f.read(2048)
-                        m = re.search(r"description:\s*([^\n\r]+)", content)
-                        if m:
-                            desc = m.group(1).strip()
-                        name_m = re.search(r"^name:\s*([^\n\r]+)", content, re.MULTILINE)
-                        if name_m:
-                            skill_name = name_m.group(1).strip()
+                        header = f.read(1500)
+                        m_desc = re.search(r"description:\s*([^\n\r]+)", header)
+                        if m_desc:
+                            desc = m_desc.group(1).strip().strip('"\'')
+                        m_name = re.search(r"^name:\s*([^\n\r]+)", header, re.MULTILINE)
+                        if m_name:
+                            display_name = m_name.group(1).strip().strip('"\'')
                 except Exception:
                     pass
 
+                cat = categorize(display_name, default_cat)
                 skills.append({
-                    "name": skill_name,
-                    "folder_name": skill_path.name,
-                    "description": desc or f"Habilidade {skill_name} para o assistente Antigravity.",
-                    "category": category,
+                    "name": display_name,
+                    "folder_name": folder_name,
+                    "description": desc or f"Habilidade {display_name} para o assistente Antigravity.",
+                    "category": cat,
                     "path": str(skill_md.resolve())
                 })
 
         skills.sort(key=lambda s: (s["category"], s["name"]))
+        self._skills_cache = skills
+        self._skills_cache_time = now
         return skills
 
     def get_skill_details(self, skill_name: str) -> Optional[Dict[str, Any]]:
@@ -808,6 +896,21 @@ class AntigravityService:
                             "content": f.read()
                         }
         return None
+
+    async def stop_conversation(self, conversation_id: str) -> bool:
+        """Para a geração/execução atual no Antigravity desktop via CDP."""
+        from .cdp_controller import cdp_controller
+        return await cdp_controller.stop_execution(conversation_id)
+
+    async def get_models(self) -> Dict[str, Any]:
+        """Obtém modelos disponíveis e modelo atual do Antigravity desktop via CDP."""
+        from .cdp_controller import cdp_controller
+        return await cdp_controller.get_models()
+
+    async def set_model(self, model_name: str) -> bool:
+        """Altera o modelo ativo no Antigravity desktop via CDP."""
+        from .cdp_controller import cdp_controller
+        return await cdp_controller.set_model(model_name)
 
     def get_contextual_suggestions(self, conversation_id: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Gera chips de ações inteligentes contextuais baseadas em artefatos, skills e projeto."""

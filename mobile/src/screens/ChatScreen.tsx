@@ -17,6 +17,7 @@ import {
   Keyboard,
   Animated,
   AppState,
+  BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -51,6 +52,7 @@ import {
   Eye,
   Archive,
   Target,
+  Bot,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
@@ -61,6 +63,7 @@ import { ConversationWebSocket } from '../services/websocket';
 import { Conversation, Message, Artifact, ToolCall, QuestionItem, MediaItem, BackgroundTask, TokenStats, SuggestionItem } from '../types';
 import BackgroundTasksModal from './BackgroundTasksModal';
 import SkillsCatalogModal from './SkillsCatalogModal';
+import ModelSelectorModal from './ModelSelectorModal';
 import { notificationService } from '../services/notificationService';
 
 interface ChatScreenProps {
@@ -99,13 +102,27 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [showTasksModal, setShowTasksModal] = useState(false);
   const [showSkillsModal, setShowSkillsModal] = useState(false);
   const [showTokensModal, setShowTokensModal] = useState(false);
+  const [showModelModal, setShowModelModal] = useState(false);
+  const [activeModelName, setActiveModelName] = useState<string>(conversation.agent_name || 'Gemini 3.8 Flash High');
+  const [isStopping, setIsStopping] = useState(false);
   const prevIsActiveRef = useRef<boolean>(false);
 
-  // Detecção de Plano Aguardando Aprovação (Proceed)
+  // Detecção de Plano Aguardando Aprovação (Proceed) - Somente planos pendentes que exigem feedback
   const latestPlanArtifact = useMemo(() => {
-    return artifacts.find((a) => a.request_feedback || a.name.toLowerCase().includes('plan')) || null;
+    return artifacts.find((a) => a.request_feedback) || null;
   }, [artifacts]);
   const hasPendingPlan = !!latestPlanArtifact;
+
+  // Nome curto do modelo para exibição no botão do header
+  const activeModelShortName = useMemo(() => {
+    const n = (tokenStats?.active_model || activeModelName || '').toLowerCase();
+    if (n.includes('flash')) return 'Flash';
+    if (n.includes('sonnet')) return 'Sonnet';
+    if (n.includes('opus')) return 'Opus';
+    if (n.includes('gpt')) return 'GPT';
+    if (n.includes('argon')) return 'Argon';
+    return 'Modelo';
+  }, [tokenStats?.active_model, activeModelName]);
 
   // Contagem de tarefas ativas
   const runningTasksCount = useMemo(() => {
@@ -146,6 +163,54 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   // Anexo de Imagem
   const [selectedImage, setSelectedImage] = useState<{ uri: string; base64: string; filename: string } | null>(null);
   const [showImagePickerModal, setShowImagePickerModal] = useState(false);
+
+  // Parar conversa/execução do Antigravity
+  const handleStopConversation = async () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    setIsStopping(true);
+    try {
+      await api.stopConversation(conversation.id);
+      setIsActive(false);
+      setTimeout(() => {
+        loadHistory();
+      }, 500);
+    } catch (e) {
+      console.error('Erro ao parar conversa:', e);
+    } finally {
+      setIsStopping(false);
+    }
+  };
+
+  // Botão voltar físico/gesto do Android dentro do Chat
+  useEffect(() => {
+    const onBackPress = () => {
+      if (showImagePickerModal) {
+        setShowImagePickerModal(false);
+        return true;
+      }
+      if (showTasksModal) {
+        setShowTasksModal(false);
+        return true;
+      }
+      if (showSkillsModal) {
+        setShowSkillsModal(false);
+        return true;
+      }
+      if (showTokensModal) {
+        setShowTokensModal(false);
+        return true;
+      }
+      if (showModelModal) {
+        setShowModelModal(false);
+        return true;
+      }
+      onBack();
+      return true;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [showImagePickerModal, showTasksModal, showSkillsModal, showTokensModal, showModelModal, onBack]);
 
   // Resposta para Pergunta Interativa (ask_question)
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
@@ -700,6 +765,40 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         </View>
 
         <View style={styles.headerRightActions}>
+          {/* Botão de Parar Execução (Ativo durante execução) */}
+          {isActive && (
+            <TouchableOpacity
+              style={styles.stopHeaderBtn}
+              onPress={handleStopConversation}
+              disabled={isStopping}
+              activeOpacity={0.8}
+            >
+              {isStopping ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <>
+                  <Square size={11} color="#ffffff" fill="#ffffff" style={{ marginRight: 4 }} />
+                  <Text style={styles.stopHeaderBtnText}>Parar</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {/* Seletor de Modelo */}
+          <TouchableOpacity
+            style={styles.modelHeaderBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowModelModal(true);
+            }}
+            activeOpacity={0.7}
+          >
+            <Bot size={13} color="#a855f7" style={{ marginRight: 3 }} />
+            <Text style={styles.modelHeaderText} numberOfLines={1}>
+              {activeModelShortName}
+            </Text>
+          </TouchableOpacity>
+
           {/* Badge de Tarefas em Segundo Plano */}
           {runningTasksCount > 0 && (
             <TouchableOpacity
@@ -1159,17 +1258,32 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           maxLength={8000}
         />
 
-        <TouchableOpacity
-          style={[styles.sendBtn, (!inputPrompt.trim() && !selectedImage) && styles.sendBtnDisabled]}
-          onPress={() => handleSend()}
-          disabled={!inputPrompt.trim() && !selectedImage}
-        >
-          {isSending ? (
-            <ActivityIndicator size="small" color="#ffffff" />
-          ) : (
-            <Send size={18} color="#ffffff" />
-          )}
-        </TouchableOpacity>
+        {isActive && !inputPrompt.trim() && !selectedImage ? (
+          <TouchableOpacity
+            style={styles.stopInputBtn}
+            onPress={handleStopConversation}
+            disabled={isStopping}
+            activeOpacity={0.8}
+          >
+            {isStopping ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <Square size={16} color="#ffffff" fill="#ffffff" />
+            )}
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.sendBtn, (!inputPrompt.trim() && !selectedImage) && styles.sendBtnDisabled]}
+            onPress={() => handleSend()}
+            disabled={!inputPrompt.trim() && !selectedImage}
+          >
+            {isSending ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <Send size={18} color="#ffffff" />
+            )}
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Modal de Escolha da Imagem */}
@@ -1223,6 +1337,18 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         }}
       />
 
+      {/* Modal de Seleção de Modelo */}
+      <ModelSelectorModal
+        visible={showModelModal}
+        conversationId={conversation.id}
+        currentModelName={tokenStats?.active_model || activeModelName}
+        onClose={() => setShowModelModal(false)}
+        onModelSelected={(m) => {
+          setActiveModelName(m);
+          loadHistory();
+        }}
+      />
+
       {/* Modal de Detalhes de Tokens & Totem do Modelo */}
       <Modal
         visible={showTokensModal}
@@ -1235,7 +1361,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           activeOpacity={1}
           onPress={() => setShowTokensModal(false)}
         >
-          <View style={styles.tokenModalCard}>
+          <View style={[styles.tokenModalCard, { paddingBottom: Math.max(insets.bottom, 20) + 8 }]}>
             <View style={styles.tokenModalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <Cpu size={18} color="#38bdf8" style={{ marginRight: 8 }} />
@@ -1918,6 +2044,43 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  stopHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: '#dc2626',
+    borderRadius: 8,
+  },
+  stopHeaderBtnText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  modelHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: '#18181b',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#581c87',
+  },
+  modelHeaderText: {
+    color: '#d8b4fe',
+    fontSize: 11,
+    fontWeight: '700',
+    maxWidth: 75,
+  },
+  stopInputBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#dc2626',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   tasksHeaderBtn: {
     position: 'relative',

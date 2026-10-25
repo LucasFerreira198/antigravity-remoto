@@ -1,4 +1,4 @@
-import { Conversation, Message, Artifact, Project, AntigravitySettings, BackgroundTask, TokenStats, Skill, SuggestionItem } from '../types';
+import { Conversation, Message, Artifact, Project, AntigravitySettings, BackgroundTask, TokenStats, Skill, SuggestionItem, ModelInfo } from '../types';
 import { StorageService } from './storage';
 
 class ApiService {
@@ -178,6 +178,26 @@ class ApiService {
     const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
     const res = await this.request<{ suggestions: SuggestionItem[] }>(`/api/conversations/${encodeURIComponent(conversationId)}/suggestions${query}`);
     return res.suggestions || [];
+  }
+
+  async stopConversation(conversationId: string): Promise<boolean> {
+    const res = await this.request<{ success: boolean }>(`/api/conversations/${encodeURIComponent(conversationId)}/stop`, {
+      method: 'POST'
+    });
+    return res.success;
+  }
+
+  async getModels(conversationId?: string): Promise<ModelInfo> {
+    const endpoint = conversationId ? `/api/conversations/${encodeURIComponent(conversationId)}/models` : '/api/models';
+    return this.request<ModelInfo>(endpoint);
+  }
+
+  async setModel(conversationId: string, modelName: string): Promise<boolean> {
+    const res = await this.request<{ success: boolean }>(`/api/conversations/${encodeURIComponent(conversationId)}/model`, {
+      method: 'POST',
+      body: JSON.stringify({ model: modelName })
+    });
+    return res.success;
   }
 }
 

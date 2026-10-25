@@ -52,7 +52,7 @@ class CDPController:
             return False
 
         try:
-            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, close_timeout=5) as ws:
+            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, close_timeout=5, origin=None) as ws:
                 async def cdp_call(method, params=None, msg_id=1):
                     await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
                     while True:
@@ -101,15 +101,26 @@ class CDPController:
                 safe_prompt = json.dumps(prompt)
                 check_modal_expr = f"""
                 (() => {{
-                    const modal = document.querySelector('[role="dialog"], [role="alertdialog"], div[data-state="open"]');
-                    if (!modal) return 'no_modal';
+                    // 1. Procurar botão de Submit da pergunta interativa na tela
+                    const allBtns = Array.from(document.querySelectorAll('button'));
+                    const submitBtn = allBtns.find(b => {{
+                        const t = (b.innerText || b.getAttribute('aria-label') || '').trim().toLowerCase();
+                        return (t === 'submit' || t.includes('submit') || t === 'confirmar') && !b.disabled;
+                    }});
+
+                    const modal = document.querySelector('[role="dialog"], [role="alertdialog"], div[data-state="open"], div[class*="modal"]') || 
+                                  (submitBtn ? (submitBtn.closest('div[class*="card"], div[class*="dialog"]') || submitBtn.parentElement.parentElement) : null);
                     
+                    if (!submitBtn && !modal) return 'no_modal';
+                    
+                    const container = modal || document.body;
                     const answerText = {safe_prompt}.trim().toLowerCase();
                     
                     // A. Procurar opção selecionável com texto correspondente
-                    const allClickables = Array.from(modal.querySelectorAll('button, label, [role="radio"], [role="checkbox"], div[class*="option"], div[class*="item"]'));
+                    const allClickables = Array.from(container.querySelectorAll('button, label, [role="radio"], [role="checkbox"], div[class*="option"], div[class*="item"], div[class*="choice"]'));
                     let clicked = false;
                     for (const el of allClickables) {{
+                        if (el === submitBtn) continue;
                         const t = (el.innerText || '').trim().toLowerCase();
                         if (t && (t === answerText || t.includes(answerText) || answerText.includes(t))) {{
                             el.click();
@@ -119,35 +130,32 @@ class CDPController:
                     }}
 
                     // B. Se não encontrou opção ou se for texto customizado, preencher o campo de texto/textarea do modal
-                    if (!clicked) {{
-                        const input = modal.querySelector('input[type="text"], textarea');
-                        if (input) {{
-                            input.focus();
-                            document.execCommand('selectAll', false, null);
-                            document.execCommand('insertText', false, {safe_prompt});
-                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        }}
+                    const input = container.querySelector('input[type="text"], textarea');
+                    if (!clicked && input) {{
+                        input.focus();
+                        document.execCommand('selectAll', false, null);
+                        document.execCommand('insertText', false, {safe_prompt});
+                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     }}
 
-                    // C. Clicar no botão Submit / Confirmar do modal
-                    setTimeout(() => {{
-                        const btns = Array.from(modal.querySelectorAll('button'));
-                        const submitBtn = btns.find(b => {{
+                    // C. Clicar no botão Submit imediatamente
+                    if (submitBtn) {{
+                        submitBtn.click();
+                    }} else {{
+                        const fallbackSubmit = Array.from(container.querySelectorAll('button')).find(b => {{
                             const t = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
-                            return t.includes('submit') || t.includes('confirm') || t.includes('responder') || t.includes('enviar') || b.type === 'submit';
+                            return t.includes('submit') || t.includes('confirm') || b.type === 'submit';
                         }});
-                        if (submitBtn) {{
-                            submitBtn.click();
-                        }}
-                    }}, 250);
+                        if (fallbackSubmit) fallbackSubmit.click();
+                    }}
 
                     return 'modal_answered';
                 }})()
                 """
                 modal_res = await cdp_call("Runtime.evaluate", {"expression": check_modal_expr, "returnByValue": True}, msg_id=20)
                 if modal_res.get("result", {}).get("result", {}).get("value") == "modal_answered":
-                    await asyncio.sleep(0.6)
+                    await asyncio.sleep(0.5)
                     return True
 
                 # 3. Focar o campo de texto e inserir o conteúdo
@@ -219,7 +227,7 @@ class CDPController:
         if not ws_url:
             return None
         try:
-            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=3) as ws:
+            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=3, origin=None) as ws:
                 expr = """
                 (() => {
                     const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
@@ -246,7 +254,7 @@ class CDPController:
             return None
 
         try:
-            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, close_timeout=5) as ws:
+            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, close_timeout=5, origin=None) as ws:
                 async def cdp_call(method, params=None, msg_id=1):
                     await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
                     while True:
@@ -302,5 +310,173 @@ class CDPController:
         except Exception as e:
             print(f"[CDP Controller] Erro ao criar conversa no desktop: {e}")
             return None
+
+    async def stop_execution(self, conversation_id: str) -> bool:
+        """Clica no botão de Parar execução (Stop execution) na interface desktop do Antigravity."""
+        port = self.get_devtools_port()
+        if not port:
+            return False
+        ws_url = await self.get_page_ws_url(port)
+        if not ws_url:
+            return False
+        try:
+            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=4, origin=None) as ws:
+                expr = """
+                (() => {
+                    const stopBtn = document.querySelector('button[aria-label*="Stop execution"], button[title*="Stop execution"], button[aria-label*="Stop"], button[data-testid*="stop"]');
+                    if (stopBtn && !stopBtn.disabled) {
+                        stopBtn.click();
+                        return true;
+                    }
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    for (const b of btns) {
+                        const t = (b.innerText || '').toLowerCase();
+                        const a = (b.getAttribute('aria-label') || '').toLowerCase();
+                        if (t === 'stop' || t === 'parar' || a === 'stop' || a === 'stop execution') {
+                            b.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                })()
+                """
+                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": expr, "returnByValue": True}}))
+                res = json.loads(await ws.recv())
+                return bool(res.get("result", {}).get("result", {}).get("value"))
+        except Exception as e:
+            print(f"[CDP Controller] Erro ao parar execução: {e}")
+            return False
+
+    async def get_models(self) -> Dict[str, Any]:
+        """Obtém o modelo ativo atual e os modelos disponíveis no Antigravity desktop."""
+        port = self.get_devtools_port()
+        if not port:
+            return {"current_model": "Desconhecido", "available_models": []}
+        ws_url = await self.get_page_ws_url(port)
+        if not ws_url:
+            return {"current_model": "Desconhecido", "available_models": []}
+        try:
+            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=4, origin=None) as ws:
+                # 1. Obter modelo atual
+                get_curr_expr = """
+                (() => {
+                    const btn = document.querySelector('button[aria-label*="Select model"]');
+                    if (!btn) return 'Gemini 3.8 Flash High';
+                    const aria = btn.getAttribute('aria-label') || '';
+                    const match = aria.match(/current:\s*(.+)$/i);
+                    if (match) return match[1].trim();
+                    return btn.innerText.trim() || 'Gemini 3.8 Flash High';
+                })()
+                """
+                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": get_curr_expr, "returnByValue": True}}))
+                res1 = json.loads(await ws.recv())
+                current_model = res1.get("result", {}).get("result", {}).get("value") or "Gemini 3.8 Flash High"
+
+                # 2. Clicar no botão para abrir as opções de modelos
+                open_expr = """
+                (() => {
+                    const btn = document.querySelector('button[aria-label*="Select model"]');
+                    if (btn) {
+                        btn.click();
+                        return true;
+                    }
+                    return false;
+                })()
+                """
+                await ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": open_expr, "returnByValue": True}}))
+                await ws.recv()
+                await asyncio.sleep(0.3)
+
+                # 3. Ler opções do menu
+                read_opts_expr = """
+                (() => {
+                    const items = Array.from(document.querySelectorAll('[role="menuitem"]')).map(el => {
+                        const lines = el.innerText.trim().split('\\n').map(l => l.trim()).filter(Boolean);
+                        const name = lines[0] || '';
+                        const badge = lines[1] || '';
+                        return { name, badge, text: el.innerText.trim() };
+                    }).filter(m => m.name && !m.name.includes('View Usage'));
+
+                    // Fechar o menu com Escape
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                    return items;
+                })()
+                """
+                await ws.send(json.dumps({"id": 3, "method": "Runtime.evaluate", "params": {"expression": read_opts_expr, "returnByValue": True}}))
+                res3 = json.loads(await ws.recv())
+                opts = res3.get("result", {}).get("result", {}).get("value") or []
+
+                if not opts:
+                    opts = [
+                        {"name": "Gemini 3.8 Flash High", "badge": "Rápido (1M)", "id": "flash"},
+                        {"name": "Claude Sonnet 4.6 (Thinking)", "badge": "Raciocínio", "id": "sonnet"},
+                        {"name": "Claude Opus 4.6 (Thinking)", "badge": "Máxima Capacidade", "id": "opus"},
+                        {"name": "GPT-OSS 120B (Medium)", "badge": "Open-Source", "id": "gpt"},
+                        {"name": "Gemini 4 Argon", "badge": "Próxima Geração", "id": "argon"},
+                    ]
+                return {
+                    "current_model": current_model,
+                    "available_models": opts
+                }
+        except Exception as e:
+            print(f"[CDP Controller] Erro ao buscar modelos: {e}")
+            return {
+                "current_model": "Gemini 3.8 Flash High",
+                "available_models": [
+                    {"name": "Gemini 3.8 Flash High", "badge": "Padrão", "id": "flash"},
+                    {"name": "Claude Sonnet 4.6 (Thinking)", "badge": "Raciocínio", "id": "sonnet"},
+                    {"name": "Claude Opus 4.6 (Thinking)", "badge": "Máxima Capacidade", "id": "opus"},
+                ]
+            }
+
+    async def set_model(self, model_name: str) -> bool:
+        """Seleciona um modelo no dropdown do Antigravity desktop."""
+        port = self.get_devtools_port()
+        if not port:
+            return False
+        ws_url = await self.get_page_ws_url(port)
+        if not ws_url:
+            return False
+        try:
+            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=4, origin=None) as ws:
+                # 1. Abrir dropdown
+                await ws.send(json.dumps({
+                    "id": 1,
+                    "method": "Runtime.evaluate",
+                    "params": {
+                        "expression": "(() => { const b = document.querySelector('button[aria-label*=\"Select model\"]'); if (b) { b.click(); return true; } return false; })()",
+                        "returnByValue": True
+                    }
+                }))
+                await ws.recv()
+                await asyncio.sleep(0.3)
+
+                # 2. Clicar no item correspondente ao model_name
+                safe_name = json.dumps(model_name.lower())
+                select_expr = f"""
+                (() => {{
+                    const query = {safe_name};
+                    const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
+                    for (const item of items) {{
+                        const text = (item.innerText || '').toLowerCase();
+                        if (text.includes(query) || (query.includes('flash') && text.includes('flash')) ||
+                            (query.includes('sonnet') && text.includes('sonnet')) ||
+                            (query.includes('opus') && text.includes('opus')) ||
+                            (query.includes('gpt') && text.includes('gpt')) ||
+                            (query.includes('argon') && text.includes('argon'))) {{
+                            item.click();
+                            return true;
+                        }}
+                    }}
+                    document.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', bubbles: true }}));
+                    return false;
+                }})()
+                """
+                await ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": select_expr, "returnByValue": True}}))
+                res2 = json.loads(await ws.recv())
+                return bool(res2.get("result", {}).get("result", {}).get("value"))
+        except Exception as e:
+            print(f"[CDP Controller] Erro ao trocar modelo: {e}")
+            return False
 
 cdp_controller = CDPController()

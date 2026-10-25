@@ -375,6 +375,29 @@ def get_suggestions(conversation_id: str, project_id: Optional[str] = None):
     """Retorna sugestões rápidas de ações contextuais para a conversa ativa."""
     return {"suggestions": service.get_contextual_suggestions(conversation_id, project_id)}
 
+# ----------------- PARAR CONVERSA E CONTROLE DE MODELOS -----------------
+
+class ModelSelectPayload(BaseModel):
+    model: str
+
+@app.post("/api/conversations/{conversation_id}/stop", dependencies=[Depends(verify_token)])
+async def stop_conversation(conversation_id: str):
+    """Interrompe a execução atual do Antigravity na conversa."""
+    success = await service.stop_conversation(conversation_id)
+    return {"success": success}
+
+@app.get("/api/models", dependencies=[Depends(verify_token)])
+@app.get("/api/conversations/{conversation_id}/models", dependencies=[Depends(verify_token)])
+async def get_conversation_models(conversation_id: Optional[str] = None):
+    """Retorna os modelos disponíveis e o modelo ativo no desktop."""
+    return await service.get_models()
+
+@app.post("/api/conversations/{conversation_id}/model", dependencies=[Depends(verify_token)])
+async def set_conversation_model(conversation_id: str, payload: ModelSelectPayload):
+    """Troca o modelo ativo da conversa no desktop."""
+    success = await service.set_model(payload.model)
+    return {"success": success, "model": payload.model}
+
 # ----------------- WEBSOCKET DE STREAMING -----------------
 
 @app.websocket("/api/conversations/{conversation_id}/stream")

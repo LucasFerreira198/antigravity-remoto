@@ -44,3 +44,19 @@ def test_projects_endpoint():
     response = client.get("/api/projects", headers=headers)
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+
+def test_models_endpoint():
+    headers = {"X-API-Key": API_KEY}
+    response = client.get("/api/models", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert "current_model" in data
+    assert "available_models" in data
+
+def test_skills_endpoint():
+    headers = {"X-API-Key": API_KEY}
+    response = client.get("/api/skills", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert "skills" in data
+    assert len(data["skills"]) > 50
