@@ -9,21 +9,30 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
-  Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Folder, Plus, ArrowLeft, X, HardDrive, Check } from 'lucide-react-native';
+import { FolderGit2, Plus, ArrowLeft, X, GitBranch, HardDrive, Check } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { colors, isTabletDevice } from '../theme/colors';
 import { api } from '../services/api';
 import { Project } from '../types';
 
 interface ProjectsScreenProps {
   onBack: () => void;
   onSelectProject?: (project: Project) => void;
+  selectedProjectId?: string;
 }
 
-export default function ProjectsScreen({ onBack, onSelectProject }: ProjectsScreenProps) {
+export default function ProjectsScreen({
+  onBack,
+  onSelectProject,
+  selectedProjectId,
+}: ProjectsScreenProps) {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isTablet = isTabletDevice(width);
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
@@ -53,7 +62,7 @@ export default function ProjectsScreen({ onBack, onSelectProject }: ProjectsScre
       return;
     }
     if (!newFolderPath.trim()) {
-      Alert.alert('Atenção', 'Informe o caminho da pasta no computador (ex: C:\\Users\\Lucas\\Documents\\GitHub\\MeuApp).');
+      Alert.alert('Atenção', 'Informe o caminho da pasta no computador.');
       return;
     }
 
@@ -74,112 +83,170 @@ export default function ProjectsScreen({ onBack, onSelectProject }: ProjectsScre
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={onBack}>
-          <ArrowLeft size={22} color="#f8fafc" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Projetos & Workspaces</Text>
-        <TouchableOpacity
-          style={styles.addBtn}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            // Sugestão padrão de pasta
-            setNewFolderPath('C:\\Users\\Lucas\\Documents\\GitHub\\');
-            setModalVisible(true);
-          }}
-        >
-          <Plus size={20} color="#38bdf8" />
-        </TouchableOpacity>
-      </View>
+      <View style={[styles.mainWrapper, isTablet && styles.mainWrapperTablet]}>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backBtn} onPress={onBack}>
+            <ArrowLeft size={20} color={colors.textPrimary} />
+          </TouchableOpacity>
 
-      {/* Lista de Projetos */}
-      {isLoading ? (
-        <View style={styles.loadingCenter}>
-          <ActivityIndicator size="large" color="#38bdf8" />
-          <Text style={styles.loadingText}>Carregando projetos do Antigravity...</Text>
+          <View style={styles.headerTitleWrap}>
+            <Text style={styles.headerTitle}>Projetos no Workspace</Text>
+            <Text style={styles.headerSubtitle}>Sincronizado via antigravity_service.py</Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.addBtn}
+            activeOpacity={0.8}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setNewFolderPath('C:\\Users\\Lucas\\Documents\\GitHub\\');
+              setModalVisible(true);
+            }}
+          >
+            <Plus size={18} color="#ffffff" strokeWidth={2.6} />
+          </TouchableOpacity>
         </View>
-      ) : (
-        <FlatList
-          data={projects}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.listContent}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.projectCard}
-              activeOpacity={0.7}
-              onPress={() => {
-                if (onSelectProject) {
-                  onSelectProject(item);
-                }
-              }}
-            >
-              <View style={styles.projectIconWrap}>
-                <Folder size={24} color="#38bdf8" />
-              </View>
-              <View style={styles.projectInfo}>
-                <Text style={styles.projectName}>{item.name}</Text>
-                <View style={styles.pathRow}>
-                  <HardDrive size={11} color="#64748b" style={{ marginRight: 4 }} />
-                  <Text style={styles.projectPath} numberOfLines={1}>
-                    {item.folder_path || 'Pasta padrão'}
-                  </Text>
-                </View>
-              </View>
-            </TouchableOpacity>
-          )}
-        />
-      )}
 
-      {/* Modal Novo Projeto */}
-      <Modal visible={modalVisible} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 20) + 8 }]}>
-            <View style={styles.dragHandle} />
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Criar Novo Projeto</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}>
-                <X size={20} color="#94a3b8" />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.inputLabel}>NOME DO PROJETO</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Ex: NovoSistemaMobile"
-              placeholderTextColor="#64748b"
-              value={newProjectName}
-              onChangeText={setNewProjectName}
-            />
-
-            <Text style={styles.inputLabel}>CAMINHO DA PASTA NO COMPUTADOR</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="C:\Users\Lucas\Documents\GitHub\NovoSistema"
-              placeholderTextColor="#64748b"
-              value={newFolderPath}
-              onChangeText={setNewFolderPath}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <TouchableOpacity
-              style={[styles.createBtn, isCreating && styles.createBtnDisabled]}
-              onPress={handleCreateProject}
-              disabled={isCreating}
-            >
-              {isCreating ? (
-                <ActivityIndicator color="#ffffff" />
-              ) : (
-                <>
-                  <Check size={18} color="#ffffff" style={{ marginRight: 8 }} />
-                  <Text style={styles.createBtnText}>Criar Projeto</Text>
-                </>
-              )}
-            </TouchableOpacity>
+        {/* Resumo do topo */}
+        <View style={styles.summaryBar}>
+          <Text style={styles.summaryText}>Repositórios Registrados</Text>
+          <View style={styles.repoBadge}>
+            <Text style={styles.repoBadgeText}>{projects.length} repos</Text>
           </View>
         </View>
-      </Modal>
+
+        {/* Lista de Projetos (1 coluna Smartphone, 2 colunas Tablet) */}
+        {isLoading ? (
+          <View style={styles.loadingCenter}>
+            <ActivityIndicator size="large" color={colors.primaryViolet} />
+            <Text style={styles.loadingText}>Carregando projetos do computador...</Text>
+          </View>
+        ) : (
+          <FlatList
+            key={isTablet ? 'tablet-projects-grid' : 'mobile-projects-list'}
+            data={projects}
+            numColumns={isTablet ? 2 : 1}
+            keyExtractor={(item) => item.id}
+            columnWrapperStyle={isTablet ? styles.tabletRow : undefined}
+            contentContainerStyle={[styles.listContent, { paddingBottom: 100 }]}
+            renderItem={({ item }) => {
+              const isSelected = selectedProjectId === item.id;
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.projectCard,
+                    isTablet && styles.projectCardTablet,
+                    isSelected && styles.projectCardSelected,
+                  ]}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    if (onSelectProject) {
+                      onSelectProject(item);
+                    }
+                  }}
+                >
+                  <View style={styles.cardTopRow}>
+                    <View
+                      style={[
+                        styles.projectIconWrap,
+                        isSelected && styles.projectIconWrapSelected,
+                      ]}
+                    >
+                      <FolderGit2
+                        size={18}
+                        color={isSelected ? '#ffffff' : colors.accentCyan}
+                      />
+                    </View>
+                    <View style={styles.projectInfo}>
+                      <View style={styles.nameRow}>
+                        <Text style={styles.projectName} numberOfLines={1}>
+                          {item.name}
+                        </Text>
+                        {isSelected && (
+                          <View style={styles.activePill}>
+                            <Text style={styles.activePillText}>Ativo</Text>
+                          </View>
+                        )}
+                      </View>
+                      <View style={styles.pathRow}>
+                        <HardDrive size={11} color={colors.textSecondary} style={{ marginRight: 4 }} />
+                        <Text style={styles.projectPath} numberOfLines={1}>
+                          {item.folder_path || 'Pasta padrão do workspace'}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={styles.cardBottomRow}>
+                    <View style={styles.branchWrap}>
+                      <GitBranch size={12} color={colors.accentCyan} style={{ marginRight: 4 }} />
+                      <Text style={styles.branchText}>main</Text>
+                    </View>
+                    <Text style={styles.techText}>React Native • FastAPI • CDP</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
+          />
+        )}
+
+        {/* Modal Novo Projeto */}
+        <Modal visible={modalVisible} animationType="slide" transparent>
+          <View style={styles.modalOverlay}>
+            <View
+              style={[
+                styles.modalCard,
+                isTablet && styles.modalCardTablet,
+                { paddingBottom: Math.max(insets.bottom, 20) + 12 },
+              ]}
+            >
+              <View style={styles.dragHandle} />
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Adicionar Projeto / Workspace</Text>
+                <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.closeBtn}>
+                  <X size={18} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.inputLabel}>NOME DO PROJETO</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Ex: NovoProjetoAntigravity"
+                placeholderTextColor={colors.textSecondary}
+                value={newProjectName}
+                onChangeText={setNewProjectName}
+              />
+
+              <Text style={styles.inputLabel}>CAMINHO ABSOLUTO NO COMPUTADOR</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Ex: C:\Users\Lucas\Documents\GitHub\NovoProjeto"
+                placeholderTextColor={colors.textSecondary}
+                value={newFolderPath}
+                onChangeText={setNewFolderPath}
+                autoCapitalize="none"
+              />
+
+              <TouchableOpacity
+                style={[styles.saveBtn, isCreating && styles.saveBtnDisabled]}
+                onPress={handleCreateProject}
+                disabled={isCreating}
+              >
+                {isCreating ? (
+                  <ActivityIndicator color="#ffffff" />
+                ) : (
+                  <>
+                    <Check size={18} color="#ffffff" style={{ marginRight: 8 }} />
+                    <Text style={styles.saveBtnText}>Salvar Projeto no Workspace</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      </View>
     </View>
   );
 }
@@ -187,161 +254,295 @@ export default function ProjectsScreen({ onBack, onSelectProject }: ProjectsScre
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundPrimary,
+  },
+  mainWrapper: {
+    flex: 1,
+    width: '100%',
+  },
+  mainWrapperTablet: {
+    maxWidth: 1080,
+    alignSelf: 'center',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 14,
-    backgroundColor: '#09090b',
+    paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#27272a',
+    borderBottomColor: colors.borderSubtle,
+    backgroundColor: colors.backgroundElevated,
   },
   backBtn: {
-    width: 42,
-    height: 42,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: colors.backgroundModal,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#141418',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#27272a',
+    marginRight: 12,
+  },
+  headerTitleWrap: {
+    flex: 1,
   },
   headerTitle: {
-    color: '#fafafa',
-    fontSize: 17,
-    fontWeight: '700',
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  headerSubtitle: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    marginTop: 1,
   },
   addBtn: {
-    width: 42,
-    height: 42,
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: colors.primaryViolet,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
-    borderRadius: 12,
+    shadowColor: colors.primaryViolet,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 5,
+    elevation: 3,
+  },
+  summaryBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  summaryText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  repoBadge: {
+    backgroundColor: colors.backgroundElevated,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  repoBadgeText: {
+    color: colors.accentCyan,
+    fontSize: 11,
+    fontFamily: 'monospace',
+    fontWeight: '700',
   },
   listContent: {
-    padding: 16,
-    paddingBottom: 120,
+    paddingHorizontal: 16,
+  },
+  tabletRow: {
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  projectCard: {
+    backgroundColor: colors.backgroundElevated,
+    borderRadius: 16,
+    padding: 15,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
+  projectCardTablet: {
+    flex: 1,
+    marginBottom: 12,
+  },
+  projectCardSelected: {
+    borderColor: colors.primaryViolet,
+    backgroundColor: '#161828',
+    shadowColor: colors.primaryViolet,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  cardTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  projectIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: colors.backgroundModal,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  projectIconWrapSelected: {
+    backgroundColor: colors.primaryViolet,
+    borderColor: colors.primaryViolet,
+  },
+  projectInfo: {
+    flex: 1,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  projectName: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  activePill: {
+    backgroundColor: 'rgba(139, 92, 246, 0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+  },
+  activePillText: {
+    color: '#C4B5FD',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  pathRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 3,
+  },
+  projectPath: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontFamily: 'monospace',
+    flex: 1,
+  },
+  cardBottomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(35, 39, 56, 0.8)',
+  },
+  branchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  branchText: {
+    color: colors.accentCyan,
+    fontSize: 11,
+    fontFamily: 'monospace',
+    fontWeight: '600',
+  },
+  techText: {
+    color: colors.textSecondary,
+    fontSize: 11,
   },
   loadingCenter: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 30,
   },
   loadingText: {
-    color: '#94a3b8',
-    fontSize: 14,
+    color: colors.textSecondary,
+    fontSize: 13,
     marginTop: 12,
-  },
-  projectCard: {
-    backgroundColor: '#141418',
-    borderRadius: 12,
-    padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#27272a',
-  },
-  projectIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 14,
-  },
-  projectInfo: {
-    flex: 1,
-  },
-  projectName: {
-    color: '#f8fafc',
-    fontSize: 15,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  pathRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  projectPath: {
-    color: '#64748b',
-    fontSize: 11,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    flex: 1,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.75)',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
     justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: colors.backgroundModal,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+  },
+  modalCardTablet: {
+    maxWidth: 540,
+    width: '100%',
+    alignSelf: 'center',
+    borderRadius: 24,
+    marginBottom: 'auto',
+    marginTop: 'auto',
   },
   dragHandle: {
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#3f3f46',
+    backgroundColor: colors.borderSubtle,
     alignSelf: 'center',
     marginBottom: 14,
-  },
-  modalCard: {
-    backgroundColor: '#09090b',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#27272a',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderSubtle,
   },
   modalTitle: {
-    color: '#f8fafc',
-    fontSize: 18,
+    color: colors.textPrimary,
+    fontSize: 16,
     fontWeight: '700',
+  },
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: colors.backgroundElevated,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   inputLabel: {
-    color: '#94a3b8',
-    fontSize: 11,
+    color: colors.textSecondary,
+    fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.8,
-    marginBottom: 6,
     marginTop: 10,
+    marginBottom: 6,
   },
   input: {
-    backgroundColor: '#141418',
+    backgroundColor: colors.backgroundPrimary,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    color: '#f8fafc',
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: '#27272a',
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontFamily: 'monospace',
   },
-  createBtn: {
-    backgroundColor: '#0284c7',
+  saveBtn: {
+    backgroundColor: colors.primaryViolet,
+    borderRadius: 14,
     height: 48,
-    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 20,
+    shadowColor: colors.primaryViolet,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  createBtnDisabled: {
+  saveBtnDisabled: {
     opacity: 0.5,
   },
-  createBtnText: {
+  saveBtnText: {
     color: '#ffffff',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
   },
 });

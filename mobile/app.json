@@ -2,24 +2,24 @@
   "expo": {
     "name": "Antigravity Remoto",
     "slug": "antigravity-remote",
-    "version": "1.0.14",
-    "orientation": "portrait",
+    "version": "1.0.15",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#09090b"
+      "backgroundColor": "#090A0F"
     },
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "package": "com.lucasferreira.antigravityremote",
-      "versionCode": 15,
+      "versionCode": 16,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#09090b"
+        "backgroundColor": "#090A0F"
       },
       "permissions": [
         "android.permission.INTERNET",
@@ -52,7 +52,7 @@
         "expo-notifications",
         {
           "icon": "./assets/icon.png",
-          "color": "#38bdf8"
+          "color": "#8B5CF6"
         }
       ]
     ]

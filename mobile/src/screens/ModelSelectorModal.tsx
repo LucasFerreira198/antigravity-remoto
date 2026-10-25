@@ -8,10 +8,12 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   BackHandler,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, Bot, Check, Zap, Brain, Sparkles, Cpu, Layers } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { colors, isTabletDevice } from '../theme/colors';
 import { api } from '../services/api';
 import { ModelOption } from '../types';
 
@@ -31,6 +33,8 @@ export default function ModelSelectorModal({
   onModelSelected,
 }: ModelSelectorModalProps) {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isTablet = isTabletDevice(width);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [activeModel, setActiveModel] = useState<string>(currentModelName || 'Gemini 3.8 Flash High');
   const [isLoading, setIsLoading] = useState(true);
@@ -112,8 +116,14 @@ export default function ModelSelectorModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.overlay}>
-        <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+      <View style={[styles.overlay, isTablet && styles.overlayTablet]}>
+        <View
+          style={[
+            styles.modalCard,
+            isTablet && styles.modalCardTablet,
+            { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+          ]}
+        >
           <View style={styles.dragHandle} />
           {/* Header */}
           <View style={styles.header}>
@@ -203,21 +213,32 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
   },
+  overlayTablet: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
   modalCard: {
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundModal,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingTop: 12,
     paddingHorizontal: 16,
     maxHeight: '80%',
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
+  },
+  modalCardTablet: {
+    maxWidth: 580,
+    width: '100%',
+    borderRadius: 24,
+    maxHeight: '75%',
   },
   dragHandle: {
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#3f3f46',
+    backgroundColor: colors.borderSubtle,
     alignSelf: 'center',
     marginBottom: 12,
   },
@@ -227,7 +248,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#27272a',
+    borderBottomColor: colors.borderSubtle,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -238,18 +259,18 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: 'rgba(168, 85, 247, 0.12)',
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 10,
   },
   headerTitle: {
-    color: '#ffffff',
+    color: colors.textPrimary,
     fontSize: 16,
     fontWeight: '700',
   },
   headerSub: {
-    color: '#94a3b8',
+    color: colors.textSecondary,
     fontSize: 12,
     marginTop: 2,
   },
@@ -262,7 +283,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   loadingText: {
-    color: '#94a3b8',
+    color: colors.textSecondary,
     marginTop: 10,
     fontSize: 13,
   },
@@ -272,15 +293,15 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   modelCard: {
-    backgroundColor: '#141418',
+    backgroundColor: colors.backgroundElevated,
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
   },
   modelCardActive: {
-    borderColor: '#a855f7',
-    backgroundColor: 'rgba(168, 85, 247, 0.08)',
+    borderColor: colors.primaryViolet,
+    backgroundColor: 'rgba(139, 92, 246, 0.12)',
   },
   modelCardHeader: {
     flexDirection: 'row',
@@ -290,7 +311,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 10,
-    backgroundColor: '#1f1f23',
+    backgroundColor: colors.backgroundModal,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -305,26 +326,26 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   modelName: {
-    color: '#ffffff',
+    color: colors.textPrimary,
     fontSize: 14.5,
     fontWeight: '700',
     flexShrink: 1,
     marginRight: 6,
   },
   modelNameActive: {
-    color: '#d8b4fe',
+    color: '#C4B5FD',
   },
   badgePill: {
-    backgroundColor: '#27272a',
+    backgroundColor: colors.backgroundModal,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
   },
   badgePillActive: {
-    backgroundColor: '#a855f7',
+    backgroundColor: colors.primaryViolet,
   },
   badgeText: {
-    color: '#94a3b8',
+    color: colors.textSecondary,
     fontSize: 10,
     fontWeight: '700',
   },
@@ -332,7 +353,7 @@ const styles = StyleSheet.create({
     color: '#ffffff',
   },
   modelSubtext: {
-    color: '#71717a',
+    color: colors.textSecondary,
     fontSize: 11.5,
     lineHeight: 16,
   },
@@ -345,7 +366,7 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: '#a855f7',
+    backgroundColor: colors.primaryViolet,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -354,6 +375,6 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: '#3f3f46',
+    borderColor: colors.borderSubtle,
   },
 });

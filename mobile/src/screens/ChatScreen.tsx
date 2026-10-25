@@ -18,6 +18,7 @@ import {
   Animated,
   AppState,
   BackHandler,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -64,6 +65,7 @@ import { Conversation, Message, Artifact, ToolCall, QuestionItem, MediaItem, Bac
 import BackgroundTasksModal from './BackgroundTasksModal';
 import SkillsCatalogModal from './SkillsCatalogModal';
 import ModelSelectorModal from './ModelSelectorModal';
+import { colors, isTabletDevice } from '../theme/colors';
 import { notificationService } from '../services/notificationService';
 
 interface ChatScreenProps {
@@ -80,6 +82,8 @@ interface QueueItem {
 
 export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: ChatScreenProps) {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isTablet = isTabletDevice(width);
   const [messages, setMessages] = useState<Message[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [inputPrompt, setInputPrompt] = useState('');
@@ -741,7 +745,8 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         },
       ]}
     >
-      {/* Cabeçalho Shadcn Obsidian */}
+      <View style={[styles.mainWrapper, isTablet && styles.mainWrapperTablet]}>
+        {/* Cabeçalho Shadcn Obsidian */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={onBack}>
           <ArrowLeft size={20} color="#f8fafc" />
@@ -1426,6 +1431,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           </View>
         </TouchableOpacity>
       </Modal>
+      </View>
     </View>
   );
 }
@@ -1435,7 +1441,16 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundPrimary,
+  },
+  mainWrapper: {
+    flex: 1,
+    width: '100%',
+  },
+  mainWrapperTablet: {
+    maxWidth: 960,
+    width: '100%',
+    alignSelf: 'center',
   },
   header: {
     flexDirection: 'row',
@@ -1443,25 +1458,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 52 : 38,
     paddingBottom: 12,
-    backgroundColor: '#0d1117',
+    backgroundColor: colors.backgroundElevated,
     borderBottomWidth: 1,
-    borderBottomColor: '#27272a',
+    borderBottomColor: colors.borderSubtle,
   },
   backBtn: {
     padding: 8,
-    borderRadius: 8,
-    backgroundColor: '#18181b',
+    borderRadius: 10,
+    backgroundColor: colors.backgroundModal,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
     marginRight: 10,
   },
   headerTitleWrap: {
     flex: 1,
   },
   headerTitle: {
-    color: '#fafafa',
+    color: colors.textPrimary,
     fontSize: 16,
     fontWeight: '700',
+    letterSpacing: -0.2,
   },
   headerSubRow: {
     flexDirection: 'row',
@@ -1469,24 +1485,26 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   headerSubText: {
-    color: '#a1a1aa',
+    color: colors.textSecondary,
     fontSize: 12,
     maxWidth: 150,
   },
   activePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#064e3b',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 10,
     marginLeft: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.35)',
   },
   activeDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#34d399',
+    backgroundColor: colors.statusEmerald,
     marginRight: 4,
   },
   activePillText: {
@@ -1497,16 +1515,16 @@ const styles = StyleSheet.create({
   artifactsBtn: {
     position: 'relative',
     padding: 8,
-    backgroundColor: '#18181b',
-    borderRadius: 8,
+    backgroundColor: colors.backgroundModal,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
   },
   artifactsBadge: {
     position: 'absolute',
     top: -4,
     right: -4,
-    backgroundColor: '#0284c7',
+    backgroundColor: colors.accentCyan,
     borderRadius: 10,
     width: 18,
     height: 18,
@@ -1514,7 +1532,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   artifactsBadgeText: {
-    color: '#ffffff',
+    color: '#090A0F',
     fontSize: 10,
     fontWeight: '700',
   },
@@ -1526,30 +1544,33 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    backgroundColor: '#18181b',
+    backgroundColor: colors.backgroundModal,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
     borderRadius: 20,
     marginBottom: 14,
   },
   loadMoreText: {
-    color: '#a1a1aa',
+    color: colors.textSecondary,
     fontSize: 12,
   },
   userBubble: {
     alignSelf: 'flex-end',
-    backgroundColor: '#1e293b',
-    borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 16,
+    backgroundColor: colors.primaryViolet,
+    borderRadius: 18,
     borderBottomRightRadius: 4,
     paddingHorizontal: 14,
     paddingVertical: 10,
     maxWidth: '85%',
     marginVertical: 4,
+    shadowColor: colors.primaryViolet,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 3,
   },
   userText: {
-    color: '#f8fafc',
+    color: '#ffffff',
     fontSize: 15,
     lineHeight: 22,
   },
@@ -1629,10 +1650,11 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   assistantCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: colors.backgroundElevated,
     borderWidth: 1,
-    borderColor: '#1e293b',
-    borderRadius: 14,
+    borderColor: colors.borderSubtle,
+    borderRadius: 18,
+    borderBottomLeftRadius: 4,
     padding: 14,
     marginVertical: 8,
   },
@@ -1641,17 +1663,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: colors.borderSubtle,
     paddingBottom: 6,
   },
   assistantAvatar: {
-    width: 18,
-    height: 18,
-    borderRadius: 4,
+    width: 20,
+    height: 20,
+    borderRadius: 6,
     marginRight: 8,
   },
   assistantName: {
-    color: '#38bdf8',
+    color: colors.primaryViolet,
     fontSize: 13,
     fontWeight: '700',
     flex: 1,
@@ -1934,8 +1956,10 @@ const styles = StyleSheet.create({
     padding: 3,
   },
   quickActionsContainer: {
-    paddingVertical: 5,
-    backgroundColor: '#09090b',
+    paddingVertical: 6,
+    backgroundColor: colors.backgroundElevated,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSubtle,
   },
   quickActionsContent: {
     paddingHorizontal: 12,
@@ -1943,15 +1967,15 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   slashChip: {
-    backgroundColor: '#141418',
+    backgroundColor: colors.backgroundModal,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
     borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
   slashChipText: {
-    color: '#38bdf8',
+    color: colors.accentCyan,
     fontSize: 11,
     fontWeight: '700',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
@@ -1961,17 +1985,28 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     paddingHorizontal: 10,
     paddingVertical: 8,
-    backgroundColor: '#0e1017',
+    backgroundColor: colors.backgroundElevated,
     borderTopWidth: 1,
-    borderTopColor: '#1e212b',
+    borderTopColor: colors.borderSubtle,
   },
   attachBtn: {
     width: 42,
     height: 42,
     borderRadius: 12,
-    backgroundColor: '#151720',
+    backgroundColor: colors.backgroundModal,
     borderWidth: 1,
-    borderColor: '#252836',
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
+  },
+  skillsBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: colors.backgroundModal,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 6,
@@ -1980,23 +2015,28 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 42,
     maxHeight: 120,
-    backgroundColor: '#151720',
+    backgroundColor: colors.backgroundPrimary,
     borderWidth: 1,
-    borderColor: '#252836',
+    borderColor: colors.borderSubtle,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 9,
-    color: '#fafafa',
+    color: colors.textPrimary,
     fontSize: 14,
   },
   sendBtn: {
     width: 42,
     height: 42,
-    backgroundColor: '#0284c7',
+    backgroundColor: colors.primaryViolet,
     borderRadius: 12,
     marginLeft: 6,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: colors.primaryViolet,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 3,
   },
   sendBtnDisabled: {
     opacity: 0.35,
@@ -2005,14 +2045,14 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 95,
     right: 20,
-    backgroundColor: '#0284c7',
+    backgroundColor: colors.primaryViolet,
     width: 40,
     height: 40,
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 5,
-    shadowColor: '#38bdf8',
+    shadowColor: colors.primaryViolet,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
@@ -2243,17 +2283,6 @@ const styles = StyleSheet.create({
   suggestionChipTextHighlight: {
     color: '#ffffff',
     fontWeight: '700',
-  },
-  skillsBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: '#151720',
-    borderWidth: 1,
-    borderColor: '#252836',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 6,
   },
   queuedWaitingPill: {
     flexDirection: 'row',

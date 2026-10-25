@@ -16,17 +16,20 @@ import ProjectsScreen from './src/screens/ProjectsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import NewConversationModal from './src/screens/NewConversationModal';
 import ArtifactViewerModal from './src/screens/ArtifactViewerModal';
+import BackgroundTasksModal from './src/screens/BackgroundTasksModal';
 import Header from './src/components/Header';
 import UpdateModal from './src/components/UpdateModal';
 import BottomNavBar, { TabKey } from './src/components/BottomNavBar';
+import { colors } from './src/theme/colors';
 
-type Screen = 'conversations' | 'chat' | 'projects' | 'settings';
+type Screen = 'conversations' | 'chat' | 'projects' | 'settings' | 'connect';
 
 export default function App() {
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
   const [currentScreen, setCurrentScreen] = useState<Screen>('conversations');
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [newConvoModalVisible, setNewConvoModalVisible] = useState(false);
+  const [backgroundTasksModalVisible, setBackgroundTasksModalVisible] = useState(false);
   const [artifactModalData, setArtifactModalData] = useState<{ visible: boolean; conversationId: string }>({
     visible: false,
     conversationId: '',
@@ -63,6 +66,10 @@ export default function App() {
         setUpdateModalVisible(false);
         return true;
       }
+      if (backgroundTasksModalVisible) {
+        setBackgroundTasksModalVisible(false);
+        return true;
+      }
       if (artifactModalData.visible) {
         setArtifactModalData({ visible: false, conversationId: '' });
         return true;
@@ -76,7 +83,7 @@ export default function App() {
         setCurrentScreen('conversations');
         return true;
       }
-      if (currentScreen === 'projects' || currentScreen === 'settings') {
+      if (currentScreen === 'projects' || currentScreen === 'settings' || currentScreen === 'connect') {
         setCurrentScreen('conversations');
         return true;
       }
@@ -85,7 +92,7 @@ export default function App() {
 
     const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => sub.remove();
-  }, [currentScreen, updateModalVisible, artifactModalData.visible, newConvoModalVisible]);
+  }, [currentScreen, updateModalVisible, backgroundTasksModalVisible, artifactModalData.visible, newConvoModalVisible]);
 
   // Monitor em segundo plano para notificar quando tarefas terminam enquanto o usuário está em outra tela
   useEffect(() => {
@@ -198,6 +205,8 @@ export default function App() {
                 <Header
                   onOpenProjects={() => setCurrentScreen('projects')}
                   onOpenSettings={() => setCurrentScreen('settings')}
+                  onOpenTasks={() => setBackgroundTasksModalVisible(true)}
+                  onOpenConnect={() => setCurrentScreen('connect')}
                 />
                 <ConversationsScreen
                   onSelectConversation={(convo) => {
@@ -235,6 +244,10 @@ export default function App() {
               />
             )}
 
+            {currentScreen === 'connect' && (
+              <ConnectScreen onConnected={() => setCurrentScreen('conversations')} />
+            )}
+
             {currentScreen === 'settings' && (
               <SettingsScreen
                 onBack={() => setCurrentScreen('conversations')}
@@ -262,6 +275,13 @@ export default function App() {
                 // Ao criar, voltar para a lista para exibir a nova conversa
                 setCurrentScreen('conversations');
               }}
+            />
+
+            {/* Modal de Tarefas em Segundo Plano */}
+            <BackgroundTasksModal
+              visible={backgroundTasksModalVisible}
+              conversationId={selectedConversation?.id}
+              onClose={() => setBackgroundTasksModalVisible(false)}
             />
 
             {/* Modal de Visualização de Artefatos */}
@@ -297,16 +317,16 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundPrimary,
   },
   splash: {
     flex: 1,
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundPrimary,
     justifyContent: 'center',
     alignItems: 'center',
   },
   mainContent: {
     flex: 1,
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundPrimary,
   },
 });

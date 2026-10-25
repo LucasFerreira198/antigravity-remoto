@@ -9,16 +9,18 @@ import {
   ActivityIndicator,
   Platform,
   BackHandler,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, Terminal, Square, RefreshCw, CheckCircle2, AlertCircle, Clock } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { colors, isTabletDevice } from '../theme/colors';
 import { api } from '../services/api';
 import { BackgroundTask } from '../types';
 
 interface BackgroundTasksModalProps {
   visible: boolean;
-  conversationId: string;
+  conversationId?: string;
   onClose: () => void;
 }
 
@@ -28,6 +30,9 @@ export default function BackgroundTasksModal({
   onClose,
 }: BackgroundTasksModalProps) {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isTablet = isTabletDevice(width);
+  const [activeConvoId, setActiveConvoId] = useState<string>(conversationId || '');
   const [tasks, setTasks] = useState<BackgroundTask[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedTask, setSelectedTask] = useState<BackgroundTask | null>(null);
@@ -44,20 +49,33 @@ export default function BackgroundTasksModal({
   }, [visible, onClose]);
 
   useEffect(() => {
+    if (conversationId) {
+      setActiveConvoId(conversationId);
+    } else if (visible) {
+      api.getConversations(1).then((convos) => {
+        if (convos && convos.length > 0) {
+          setActiveConvoId(convos[0].id);
+        }
+      }).catch(() => {});
+    }
+  }, [visible, conversationId]);
+
+  useEffect(() => {
     let interval: any;
-    if (visible && conversationId) {
+    if (visible && activeConvoId) {
       loadTasks();
       interval = setInterval(loadTasksSilently, 3000);
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [visible, conversationId]);
+  }, [visible, activeConvoId]);
 
   const loadTasks = async () => {
+    if (!activeConvoId) return;
     setIsLoading(true);
     try {
-      const data = await api.getBackgroundTasks(conversationId);
+      const data = await api.getBackgroundTasks(activeConvoId);
       setTasks(data);
       if (data.length > 0 && !selectedTask) {
         setSelectedTask(data[0]);
@@ -70,8 +88,9 @@ export default function BackgroundTasksModal({
   };
 
   const loadTasksSilently = async () => {
+    if (!activeConvoId) return;
     try {
-      const data = await api.getBackgroundTasks(conversationId);
+      const data = await api.getBackgroundTasks(activeConvoId);
       setTasks(data);
       if (selectedTask) {
         const fresh = data.find((t) => t.task_id === selectedTask.task_id);
@@ -81,10 +100,11 @@ export default function BackgroundTasksModal({
   };
 
   const handleStopTask = async (taskId: string) => {
+    if (!activeConvoId) return;
     setStoppingTaskId(taskId);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     try {
-      await api.stopBackgroundTask(conversationId, taskId);
+      await api.stopBackgroundTask(activeConvoId, taskId);
       await loadTasks();
     } catch (e) {
       console.error('Erro ao parar tarefa:', e);
@@ -97,14 +117,20 @@ export default function BackgroundTasksModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.overlay}>
-        <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+      <View style={[styles.overlay, isTablet && styles.overlayTablet]}>
+        <View
+          style={[
+            styles.modalCard,
+            isTablet && styles.modalCardTablet,
+            { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+          ]}
+        >
           <View style={styles.dragHandle} />
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
               <View style={styles.headerIconWrap}>
-                <Terminal size={18} color="#38bdf8" />
+                <Terminal size={18} color={colors.accentCyan} />
               </View>
               <View>
                 <Text style={styles.headerTitle}>Servidores & Processos do PC</Text>
@@ -268,8 +294,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
   },
+  overlayTablet: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
   modalCard: {
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundModal,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingTop: 12,
@@ -277,13 +308,19 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     height: '82%',
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
+  },
+  modalCardTablet: {
+    maxWidth: 760,
+    width: '100%',
+    borderRadius: 24,
+    height: '76%',
   },
   dragHandle: {
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#3f3f46',
+    backgroundColor: colors.borderSubtle,
     alignSelf: 'center',
     marginBottom: 12,
   },
@@ -293,7 +330,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#27272a',
+    borderBottomColor: colors.borderSubtle,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -304,7 +341,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    backgroundColor: 'rgba(6, 182, 212, 0.12)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 10,

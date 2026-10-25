@@ -11,11 +11,13 @@ import {
   Clipboard,
   Platform,
   BackHandler,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, FileText, Copy, Check, ArrowLeft, Image as ImageIcon, Play, CheckCircle } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Markdown from 'react-native-markdown-display';
+import { colors, isTabletDevice } from '../theme/colors';
 import { api } from '../services/api';
 import { Artifact } from '../types';
 
@@ -33,6 +35,8 @@ export default function ArtifactViewerModal({
   onProceedSent,
 }: ArtifactViewerModalProps) {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isTablet = isTabletDevice(width);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [contentData, setContentData] = useState<any>(null);
@@ -115,8 +119,14 @@ export default function ArtifactViewerModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.overlay}>
-        <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+      <View style={[styles.overlay, isTablet && styles.overlayTablet]}>
+        <View
+          style={[
+            styles.modalCard,
+            isTablet && styles.modalCardTablet,
+            { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+          ]}
+        >
           <View style={styles.dragHandle} />
           {/* Header */}
           <View style={styles.header}>
@@ -256,37 +266,48 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
   },
+  overlayTablet: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
   dragHandle: {
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#3f3f46',
+    backgroundColor: colors.borderSubtle,
     alignSelf: 'center',
     marginBottom: 12,
   },
   modalCard: {
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundModal,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     padding: 16,
     height: '85%',
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
+  },
+  modalCardTablet: {
+    maxWidth: 760,
+    width: '100%',
+    borderRadius: 24,
+    height: '80%',
   },
   proceedFooter: {
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#27272a',
-    backgroundColor: '#12141c',
+    borderTopColor: colors.borderSubtle,
+    backgroundColor: colors.backgroundElevated,
   },
   proceedBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#059669',
+    backgroundColor: colors.statusEmerald,
     paddingVertical: 14,
     borderRadius: 12,
-    shadowColor: '#10b981',
+    shadowColor: colors.statusEmerald,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.35,
     shadowRadius: 8,

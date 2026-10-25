@@ -10,10 +10,12 @@ import {
   ActivityIndicator,
   BackHandler,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, Sparkles, Search, Check, Globe, Flame, Bot, Compass, ArrowRight, Wrench, Shield, Code2, Cloud, Palette, Share2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { colors, isTabletDevice } from '../theme/colors';
 import { api } from '../services/api';
 import { Skill } from '../types';
 
@@ -29,6 +31,8 @@ export default function SkillsCatalogModal({
   onSelectSkill,
 }: SkillsCatalogModalProps) {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isTablet = isTabletDevice(width);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -135,14 +139,20 @@ export default function SkillsCatalogModal({
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.overlay}>
-        <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+      <View style={[styles.overlay, isTablet && styles.overlayTablet]}>
+        <View
+          style={[
+            styles.modalCard,
+            isTablet && styles.modalCardTablet,
+            { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+          ]}
+        >
           <View style={styles.dragHandle} />
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
               <View style={styles.headerIconWrap}>
-                <Sparkles size={18} color="#38bdf8" />
+                <Wrench size={18} color={colors.statusAmber} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.headerTitle} numberOfLines={1}>Catálogo de Skills</Text>
@@ -239,21 +249,32 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
   },
+  overlayTablet: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
   modalCard: {
-    backgroundColor: '#09090b',
+    backgroundColor: colors.backgroundModal,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingTop: 12,
     paddingHorizontal: 16,
     height: '86%',
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
+  },
+  modalCardTablet: {
+    maxWidth: 680,
+    width: '100%',
+    borderRadius: 24,
+    height: '80%',
   },
   dragHandle: {
     width: 36,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#3f3f46',
+    backgroundColor: colors.borderSubtle,
     alignSelf: 'center',
     marginBottom: 12,
   },
@@ -263,7 +284,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#27272a',
+    borderBottomColor: colors.borderSubtle,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -275,18 +296,18 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 10,
   },
   headerTitle: {
-    color: '#ffffff',
+    color: colors.textPrimary,
     fontSize: 16,
     fontWeight: '700',
   },
   headerSub: {
-    color: '#94a3b8',
+    color: colors.textSecondary,
     fontSize: 12,
     marginTop: 2,
   },
@@ -296,17 +317,17 @@ const styles = StyleSheet.create({
   searchBarWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#141418',
+    backgroundColor: colors.backgroundElevated,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 9,
     marginTop: 12,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
   },
   searchInput: {
     flex: 1,
-    color: '#ffffff',
+    color: colors.textPrimary,
     fontSize: 14,
     paddingVertical: 0,
   },
@@ -321,23 +342,23 @@ const styles = StyleSheet.create({
   categoryChip: {
     paddingHorizontal: 13,
     paddingVertical: 6,
-    backgroundColor: '#141418',
+    backgroundColor: colors.backgroundElevated,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
     alignSelf: 'center',
   },
   categoryChipSelected: {
-    backgroundColor: '#38bdf8',
-    borderColor: '#38bdf8',
+    backgroundColor: colors.primaryViolet,
+    borderColor: colors.primaryViolet,
   },
   categoryChipText: {
-    color: '#a1a1aa',
+    color: colors.textSecondary,
     fontSize: 12,
     fontWeight: '600',
   },
   categoryChipTextSelected: {
-    color: '#09090b',
+    color: '#ffffff',
     fontWeight: '700',
   },
   centerLoading: {
@@ -346,7 +367,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   loadingText: {
-    color: '#94a3b8',
+    color: colors.textSecondary,
     marginTop: 10,
     fontSize: 13,
   },
@@ -357,13 +378,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   emptyTitle: {
-    color: '#ffffff',
+    color: colors.textPrimary,
     fontSize: 16,
     fontWeight: '700',
     marginTop: 12,
   },
   emptyDesc: {
-    color: '#71717a',
+    color: colors.textSecondary,
     fontSize: 13,
     textAlign: 'center',
     marginTop: 6,
@@ -374,11 +395,11 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   skillCard: {
-    backgroundColor: '#141418',
+    backgroundColor: colors.backgroundElevated,
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
-    borderColor: '#27272a',
+    borderColor: colors.borderSubtle,
   },
   skillCardTop: {
     flexDirection: 'row',
