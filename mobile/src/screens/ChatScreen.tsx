@@ -624,7 +624,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
   // Renderizador de pergunta interativa (ask_question)
   const renderInteractiveQuestion = (toolCall: ToolCall, stepKey: string) => {
-    let questions = toolCall.questions || [];
+    let questions: QuestionItem[] = toolCall.questions || (toolCall as any).args?.questions || [];
     if (typeof questions === 'string') {
       try {
         questions = JSON.parse(questions);
@@ -641,13 +641,14 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           <Text style={styles.questionTitle}>Pergunta do Antigravity</Text>
         </View>
 
-        {questions.map((q, qIdx) => {
+        {questions.map((q: QuestionItem, qIdx: number) => {
           const selected = questionAnswers[`${stepKey}_${qIdx}`] || '';
+          const optionsList = Array.isArray(q.options) ? q.options : [];
           return (
             <View key={qIdx} style={styles.questionBody}>
               <Text style={styles.questionPrompt}>{q.question}</Text>
               <View style={styles.optionsWrap}>
-                {q.options.map((opt, optIdx) => {
+                {optionsList.map((opt: string, optIdx: number) => {
                   const isSelected = selected === opt;
                   return (
                     <TouchableOpacity

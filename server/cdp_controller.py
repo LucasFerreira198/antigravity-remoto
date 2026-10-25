@@ -100,12 +100,12 @@ class CDPController:
                 # 2.5 Verificar se há um modal de pergunta interativa aberto no desktop (ask_question)
                 safe_prompt = json.dumps(prompt)
                 check_modal_expr = f"""
-                (() => {{
-                    // 1. Procurar botão de Submit da pergunta interativa na tela
+                (async () => {{
+                    // 1. Procurar botão de Submit da pergunta interativa na tela (sem exigir disabled=false inicialmente)
                     const allBtns = Array.from(document.querySelectorAll('button'));
                     const submitBtn = allBtns.find(b => {{
                         const t = (b.innerText || b.getAttribute('aria-label') || '').trim().toLowerCase();
-                        return (t === 'submit' || t.includes('submit') || t === 'confirmar') && !b.disabled;
+                        return t === 'submit' || t.includes('submit') || t === 'confirmar';
                     }});
 
                     const modal = document.querySelector('[role="dialog"], [role="alertdialog"], div[data-state="open"], div[class*="modal"]') || 
@@ -117,7 +117,7 @@ class CDPController:
                     const answerText = {safe_prompt}.trim().toLowerCase();
                     
                     // A. Procurar opção selecionável com texto correspondente
-                    const allClickables = Array.from(container.querySelectorAll('button, label, [role="radio"], [role="checkbox"], div[class*="option"], div[class*="item"], div[class*="choice"]'));
+                    const allClickables = Array.from(container.querySelectorAll('button, label, [role="radio"], [role="checkbox"], div[class*="option"], div[class*="item"], div[class*="choice"], span'));
                     let clicked = false;
                     for (const el of allClickables) {{
                         if (el === submitBtn) continue;
@@ -139,21 +139,27 @@ class CDPController:
                         input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     }}
 
-                    // C. Clicar no botão Submit imediatamente
+                    await new Promise(r => setTimeout(r, 200));
+
+                    // C. Clicar no botão Submit
                     if (submitBtn) {{
+                        submitBtn.disabled = false;
                         submitBtn.click();
                     }} else {{
                         const fallbackSubmit = Array.from(container.querySelectorAll('button')).find(b => {{
                             const t = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
                             return t.includes('submit') || t.includes('confirm') || b.type === 'submit';
                         }});
-                        if (fallbackSubmit) fallbackSubmit.click();
+                        if (fallbackSubmit) {{
+                            fallbackSubmit.disabled = false;
+                            fallbackSubmit.click();
+                        }}
                     }}
 
                     return 'modal_answered';
                 }})()
                 """
-                modal_res = await cdp_call("Runtime.evaluate", {"expression": check_modal_expr, "returnByValue": True}, msg_id=20)
+                modal_res = await cdp_call("Runtime.evaluate", {"expression": check_modal_expr, "returnByValue": True, "awaitPromise": True}, msg_id=20)
                 if modal_res.get("result", {}).get("result", {}).get("value") == "modal_answered":
                     await asyncio.sleep(0.5)
                     return True
@@ -358,7 +364,7 @@ class CDPController:
         try:
             async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=4, origin=None) as ws:
                 # 1. Obter modelo atual
-                get_curr_expr = """
+                get_curr_expr = r"""
                 (() => {
                     const btn = document.querySelector('button[aria-label*="Select model"]');
                     if (!btn) return 'Gemini 3.8 Flash High';
