@@ -86,7 +86,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
-  const [displayCount, setDisplayCount] = useState(35);
+  const [displayCount, setDisplayCount] = useState(120);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [localQueue, setLocalQueue] = useState<QueueItem[]>([]);
   const [serverQueue, setServerQueue] = useState<QueueItem[]>([]);
@@ -278,7 +278,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           }
         }
       } catch (e) {}
-    }, 2500);
+    }, 1200);
 
     return () => {
       isMounted = false;
@@ -364,7 +364,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   };
 
   // Envio de mensagem ou resposta interativa
-  const handleSend = async (overrideText?: string) => {
+  const handleSend = async (overrideText?: string, isQuestionAnswer = false) => {
     const textToSend = (overrideText || inputPrompt).trim();
     if (!textToSend && !selectedImage) return;
 
@@ -374,8 +374,8 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     setSelectedImage(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Se o assistente já estiver trabalhando, registrar na fila do PC e local sem criar falso balão de chat que some
-    if (isActive) {
+    // Se o assistente já estiver trabalhando (e NÃO for resposta a uma pergunta interativa)
+    if (isActive && !isQuestionAnswer) {
       const qId = Date.now().toString();
       setLocalQueue((prev) => [...prev, { id: qId, content: textToSend, source: 'mobile' }]);
       setIsSending(true);
@@ -640,7 +640,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                     const finalChoice = customAnswer[`${stepKey}_${qIdx}`] || selected;
                     if (finalChoice) {
                       setSubmittedQuestions((prev) => ({ ...prev, [stepKey]: finalChoice }));
-                      handleSend(finalChoice);
+                      handleSend(finalChoice, true);
                     }
                   }}
                 >
@@ -655,9 +655,16 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     );
   };
 
-  // Janela de renderização para fluidez
-  const displayedMessages = messages.slice(-displayCount);
-  const hasMoreMessages = messages.length > displayCount;
+  // Janela de renderização ampla com garantia de visibilidade da pergunta do usuário
+  const displayedMessages = useMemo(() => {
+    if (messages.length <= displayCount) return messages;
+    const lastUserIdx = messages.map((m) => m.role).lastIndexOf('user');
+    if (lastUserIdx !== -1 && messages.length - lastUserIdx >= displayCount) {
+      return messages.slice(lastUserIdx);
+    }
+    return messages.slice(-displayCount);
+  }, [messages, displayCount]);
+  const hasMoreMessages = messages.length > displayedMessages.length;
 
   return (
     <View

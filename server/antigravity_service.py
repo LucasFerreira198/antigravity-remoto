@@ -35,7 +35,7 @@ class AntigravityService:
         # 1. Extrair conteúdo principal de <USER_REQUEST> se existir
         match = re.search(r'<USER_REQUEST>(.*?)</USER_REQUEST>', text, re.DOTALL)
         if match:
-            text = match.group(1).strip()
+            return match.group(1).strip()
 
         # 2. Remover bloco de metadados
         text = re.sub(r'<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>', '', text, flags=re.DOTALL)
@@ -199,8 +199,8 @@ class AntigravityService:
             try:
                 with open(transcript_file, "r", encoding="utf-8") as f:
                     all_lines = f.readlines()
-                    # Ler até as últimas 150 linhas para resposta instantânea no mobile
-                    target_lines = all_lines[-150:] if len(all_lines) > 150 else all_lines
+                    # Ler até 500 linhas garantindo múltiplos turnos e todas as mensagens do usuário
+                    target_lines = all_lines[-500:] if len(all_lines) > 500 else all_lines
 
                 # Determinar com precisão se o agente está trabalhando:
                 # O turno permanece ativo enquanto o último passo não for uma resposta final com conteúdo
@@ -216,7 +216,13 @@ class AntigravityService:
                             is_active = True
                             break
                         elif st == "PLANNER_RESPONSE":
-                            has_tools = bool(s_data.get("tool_calls"))
+                            tool_calls = s_data.get("tool_calls", [])
+                            # Se a ferramenta for ask_question, o agente está aguardando resposta do usuário (não está executando)
+                            has_ask_question = any(tc.get("name") == "ask_question" for tc in tool_calls)
+                            if has_ask_question:
+                                is_active = False
+                                break
+                            has_tools = bool(tool_calls)
                             if has_tools:
                                 is_active = True
                                 break
