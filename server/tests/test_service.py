@@ -43,3 +43,36 @@ def test_get_settings():
     settings = service.get_settings()
     assert isinstance(settings, dict)
     assert "themeMode" in settings or "autoExecutionPolicy" in settings or True
+
+def test_list_installed_skills():
+    service = AntigravityService()
+    skills = service.list_installed_skills()
+    assert isinstance(skills, list)
+    assert len(skills) > 0
+    first = skills[0]
+    assert "name" in first
+    assert "category" in first
+    assert "description" in first
+    assert "path" in first
+
+def test_token_usage_stats():
+    service = AntigravityService()
+    convos = service.list_conversations(limit=1)
+    if convos:
+        cid = convos[0]["id"]
+        stats = service.get_token_usage_stats(cid)
+        assert isinstance(stats, dict)
+        assert "current_context_tokens" in stats
+        assert "context_percent_used" in stats
+        assert "active_model" in stats
+
+def test_contextual_suggestions():
+    service = AntigravityService()
+    convos = service.list_conversations(limit=1)
+    if convos:
+        cid = convos[0]["id"]
+        suggestions = service.get_contextual_suggestions(cid)
+        assert isinstance(suggestions, list)
+        assert len(suggestions) > 0
+        assert "title" in suggestions[0]
+        assert "prompt" in suggestions[0]

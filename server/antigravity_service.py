@@ -384,14 +384,19 @@ class AntigravityService:
                     except Exception:
                         pass
                 
+                is_req_feedback = bool(
+                    meta_info.get("RequestFeedback", meta_info.get("requestFeedback", False))
+                    or ("plan" in item.name.lower())
+                )
                 artifacts.append({
                     "name": item.name,
                     "size": item.stat().st_size,
                     "modified_at": datetime.datetime.fromtimestamp(item.stat().st_mtime).isoformat(),
-                    "summary": meta_info.get("Summary", ""),
-                    "user_facing": meta_info.get("UserFacing", True),
+                    "summary": meta_info.get("Summary", meta_info.get("summary", "")),
+                    "user_facing": meta_info.get("UserFacing", meta_info.get("userFacing", True)),
                     "is_markdown": item.suffix.lower() in [".md", ".markdown", ".txt"],
-                    "is_image": item.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp", ".svg"]
+                    "is_image": item.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp", ".svg"],
+                    "request_feedback": is_req_feedback
                 })
         return artifacts
 
@@ -402,6 +407,19 @@ class AntigravityService:
         if not str(target).startswith(str(brain_dir.resolve())) or not target.exists():
             return None
         
+        meta_file = brain_dir / f"{target.name}.metadata.json"
+        meta_info = {}
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as mf:
+                    meta_info = json.load(mf)
+            except Exception:
+                pass
+        is_req_feedback = bool(
+            meta_info.get("RequestFeedback", meta_info.get("requestFeedback", False))
+            or ("plan" in target.name.lower())
+        )
+
         is_binary = target.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp", ".exe", ".bin"]
         if is_binary:
             with open(target, "rb") as f:
@@ -409,14 +427,18 @@ class AntigravityService:
                 return {
                     "filename": filename,
                     "is_binary": True,
-                    "base64_data": base64.b64encode(f.read()).decode("ascii")
+                    "base64_data": base64.b64encode(f.read()).decode("ascii"),
+                    "request_feedback": is_req_feedback,
+                    "summary": meta_info.get("Summary", meta_info.get("summary", ""))
                 }
         else:
             with open(target, "r", encoding="utf-8", errors="replace") as f:
                 return {
                     "filename": filename,
                     "is_binary": False,
-                    "content": f.read()
+                    "content": f.read(),
+                    "request_feedback": is_req_feedback,
+                    "summary": meta_info.get("Summary", meta_info.get("summary", ""))
                 }
 
     def execute_turn_stream(
@@ -569,3 +591,278 @@ class AntigravityService:
         except Exception as e:
             print(f"Erro ao salvar configurações: {e}")
             raise
+
+    def get_background_tasks(self, conversation_id: str) -> List[Dict[str, Any]]:
+        """Descobre tarefas executadas em segundo plano e monitora status/logs."""
+        brain_dir = self.paths.BRAIN_DIR / conversation_id
+        tasks_dir = brain_dir / ".system_generated" / "tasks"
+        transcript_file = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
+        
+        tasks: Dict[str, Dict[str, Any]] = {}
+        
+        # 1. Parse do transcript para mapear descrições e comandos
+        if transcript_file.exists():
+            try:
+                with open(transcript_file, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            d = json.loads(line)
+                            content = d.get("content", "")
+                            if "Tool is running as a background task with task id:" in content:
+                                m = re.search(r"task id:\s*([^\r\n]+)", content)
+                                desc = re.search(r"Task Description:\s*([^\r\n]+)", content)
+                                if m:
+                                    tid = m.group(1).split("\n")[0].split("\r")[0].strip()
+                                    simple_id = tid.split("/")[-1].split("\\")[-1]
+                                    clean_desc = desc.group(1).split("\n")[0].split("\r")[0].strip() if desc else "Comando em segundo plano"
+                                    tasks[simple_id] = {
+                                        "task_id": simple_id,
+                                        "full_id": tid,
+                                        "description": clean_desc,
+                                        "created_at": d.get("created_at"),
+                                        "status": "running",
+                                        "is_daemon": "IsDaemon" in content or "uvicorn" in content or "server" in content,
+                                        "tool_name": "run_command"
+                                    }
+                            elif "finished with result:" in content:
+                                m = re.search(r"sender=([^\s\r\n]+)", content)
+                                if m:
+                                    tid = m.group(1).split("\n")[0].split("\r")[0].strip().split("/")[-1].split("\\")[-1]
+                                    if tid in tasks:
+                                        tasks[tid]["status"] = "completed"
+                        except Exception:
+                            continue
+            except Exception as e:
+                print(f"Erro ao ler transcript para tarefas: {e}")
+
+        # 2. Ler arquivos de logs em tasks_dir para atualizar tarefas ou encontrar logs
+        if tasks_dir.exists():
+            for lf in tasks_dir.glob("task-*.log"):
+                simple_id = lf.stem
+                if simple_id not in tasks:
+                    tasks[simple_id] = {
+                        "task_id": simple_id,
+                        "full_id": f"{conversation_id}/{simple_id}",
+                        "description": f"Tarefa {simple_id}",
+                        "created_at": datetime.datetime.fromtimestamp(lf.stat().st_ctime).isoformat(),
+                        "status": "completed",
+                        "is_daemon": False,
+                        "tool_name": "background_task"
+                    }
+                
+                try:
+                    log_size = lf.stat().st_size
+                    tasks[simple_id]["log_size"] = log_size
+                    if log_size > 0:
+                        with open(lf, "r", encoding="utf-8", errors="replace") as lg:
+                            lines = lg.readlines()
+                            tasks[simple_id]["log_tail"] = "".join(lines[-40:])
+                    else:
+                        tasks[simple_id]["log_tail"] = "(Aguardando saída de log...)"
+                except Exception:
+                    tasks[simple_id]["log_tail"] = ""
+
+        task_list = list(tasks.values())
+        task_list.sort(key=lambda t: (0 if t.get("status") == "running" else 1, t.get("task_id", "")), reverse=False)
+        return task_list
+
+    def stop_background_task(self, conversation_id: str, task_id: str) -> bool:
+        """Encerra um processo em segundo plano."""
+        try:
+            subprocess.run(["powershell", "-Command", f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{task_id}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"], timeout=5)
+            return True
+        except Exception as e:
+            print(f"Erro ao parar tarefa {task_id}: {e}")
+            return False
+
+    def get_token_usage_stats(self, conversation_id: str) -> Dict[str, Any]:
+        """Calcula métricas detalhadas de consumo de tokens (input, cache, output, janela)."""
+        brain_dir = self.paths.BRAIN_DIR / conversation_id
+        transcript_file = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
+        
+        latest_input = 0
+        latest_cache = 0
+        latest_output = 0
+        total_output_sum = 0
+        steps_count = 0
+        model_name = "Gemini 3.8 Flash High"
+
+        if transcript_file.exists():
+            try:
+                with open(transcript_file, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            d = json.loads(line)
+                            steps_count += 1
+                            if "input_tokens" in d:
+                                latest_input = d.get("input_tokens", 0)
+                                latest_cache = d.get("cache_read_tokens", 0)
+                                out = d.get("output_tokens", 0)
+                                latest_output = out
+                                total_output_sum += out
+                            if "model" in d:
+                                model_name = d.get("model")
+                        except Exception:
+                            continue
+            except Exception as e:
+                print(f"Erro ao ler transcript para tokens: {e}")
+
+        context_window = 1048576  # 1M tokens context window
+        current_context = latest_input + latest_cache
+        pct = round((current_context / context_window) * 100, 2) if context_window > 0 else 0.0
+        cache_savings = round((latest_cache / current_context * 100), 1) if current_context > 0 else 0.0
+
+        return {
+            "conversation_id": conversation_id,
+            "steps_count": steps_count,
+            "current_context_tokens": current_context,
+            "context_window_size": context_window,
+            "context_percent_used": pct,
+            "latest_input_tokens": latest_input,
+            "latest_cache_read_tokens": latest_cache,
+            "latest_output_tokens": latest_output,
+            "total_output_tokens": total_output_sum,
+            "cache_savings_percent": cache_savings,
+            "active_model": model_name
+        }
+
+    def list_installed_skills(self) -> List[Dict[str, Any]]:
+        """Descobre todas as skills instaladas no computador com categorias e descrições."""
+        skills: List[Dict[str, Any]] = []
+        
+        search_dirs = [
+            (self.paths.ANTIGRAVITY_DIR / "builtin" / "skills", "Antigravity"),
+            (self.paths.CONFIG_DIR / "plugins" / "chrome-devtools-plugin" / "skills", "Chrome DevTools"),
+            (self.paths.CONFIG_DIR / "plugins" / "firebase" / "skills", "Firebase"),
+            (self.paths.CONFIG_DIR / "plugins" / "gemini-api" / "skills", "Gemini AI"),
+        ]
+
+        plugins_root = self.paths.CONFIG_DIR / "plugins"
+        if plugins_root.exists():
+            for plugin_dir in plugins_root.iterdir():
+                if plugin_dir.is_dir() and plugin_dir.name not in ["chrome-devtools-plugin", "firebase", "gemini-api"]:
+                    sk_dir = plugin_dir / "skills"
+                    if sk_dir.exists():
+                        search_dirs.append((sk_dir, plugin_dir.name.replace("-", " ").title()))
+
+        seen_names = set()
+        for base_dir, category in search_dirs:
+            if not base_dir.exists():
+                continue
+            for skill_path in base_dir.iterdir():
+                if not skill_path.is_dir():
+                    continue
+                skill_md = skill_path / "SKILL.md"
+                if not skill_md.exists():
+                    continue
+                
+                skill_name = skill_path.name
+                if skill_name in seen_names:
+                    continue
+                seen_names.add(skill_name)
+
+                desc = ""
+                try:
+                    with open(skill_md, "r", encoding="utf-8", errors="replace") as f:
+                        content = f.read(2048)
+                        m = re.search(r"description:\s*([^\n\r]+)", content)
+                        if m:
+                            desc = m.group(1).strip()
+                        name_m = re.search(r"^name:\s*([^\n\r]+)", content, re.MULTILINE)
+                        if name_m:
+                            skill_name = name_m.group(1).strip()
+                except Exception:
+                    pass
+
+                skills.append({
+                    "name": skill_name,
+                    "folder_name": skill_path.name,
+                    "description": desc or f"Habilidade {skill_name} para o assistente Antigravity.",
+                    "category": category,
+                    "path": str(skill_md.resolve())
+                })
+
+        skills.sort(key=lambda s: (s["category"], s["name"]))
+        return skills
+
+    def get_skill_details(self, skill_name: str) -> Optional[Dict[str, Any]]:
+        """Retorna o conteúdo completo de um SKILL.md."""
+        all_skills = self.list_installed_skills()
+        for s in all_skills:
+            if s["name"].lower() == skill_name.lower() or s["folder_name"].lower() == skill_name.lower():
+                p = Path(s["path"])
+                if p.exists():
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        return {
+                            **s,
+                            "content": f.read()
+                        }
+        return None
+
+    def get_contextual_suggestions(self, conversation_id: str, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Gera chips de ações inteligentes contextuais baseadas em artefatos, skills e projeto."""
+        suggestions = []
+        
+        # 1. Se houver plano aguardando aprovação
+        artifacts = self.list_artifacts(conversation_id)
+        has_pending_plan = any(a.get("request_feedback") for a in artifacts)
+        if has_pending_plan:
+            suggestions.append({
+                "id": "proceed",
+                "title": "⚡ Proceed (Executar Plano)",
+                "prompt": "Proceed",
+                "type": "instant_execute",
+                "highlight": True,
+                "icon": "play"
+            })
+
+        # 2. Sugestões de desenvolvimento para React Native / Expo e Antigravity
+        suggestions.extend([
+            {
+                "id": "apk_build",
+                "title": "🚀 Gerar APK Android",
+                "prompt": "cd mobile; npx expo export --platform android",
+                "type": "fill_input",
+                "icon": "smartphone"
+            },
+            {
+                "id": "ts_check",
+                "title": "🧪 Testar Tipos TS",
+                "prompt": "cd mobile; npx tsc --noEmit",
+                "type": "fill_input",
+                "icon": "check-circle"
+            },
+            {
+                "id": "a11y_audit",
+                "title": "🔍 Auditar Acessibilidade",
+                "prompt": "Use a skill a11y-debugging para auditar a acessibilidade das telas mobile",
+                "type": "fill_input",
+                "icon": "eye"
+            },
+            {
+                "id": "lcp_perf",
+                "title": "⚡ Otimizar Performance",
+                "prompt": "Use a skill debug-optimize-lcp para analisar o carregamento e renderização",
+                "type": "fill_input",
+                "icon": "zap"
+            },
+            {
+                "id": "compact_history",
+                "title": "🧹 Compactar Contexto",
+                "prompt": "/compact",
+                "type": "instant_execute",
+                "icon": "archive"
+            },
+            {
+                "id": "goal_mode",
+                "title": "🎯 Modo Objetivo (/goal)",
+                "prompt": "/goal ",
+                "type": "fill_input",
+                "icon": "target"
+            }
+        ])
+        return suggestions

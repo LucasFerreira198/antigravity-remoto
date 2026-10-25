@@ -332,6 +332,49 @@ def get_media_file(conversation_id: str, filename: str):
         mime = "image/svg+xml"
     return FileResponse(str(target), media_type=mime)
 
+# ----------------- TAREFAS EM SEGUNDO PLANO -----------------
+
+@app.get("/api/conversations/{conversation_id}/background-tasks", dependencies=[Depends(verify_token)])
+def get_background_tasks(conversation_id: str):
+    """Lista tarefas em segundo plano e monitora status/logs da conversa."""
+    tasks = service.get_background_tasks(conversation_id)
+    return {"tasks": tasks}
+
+@app.post("/api/conversations/{conversation_id}/background-tasks/{task_id}/stop", dependencies=[Depends(verify_token)])
+def stop_background_task(conversation_id: str, task_id: str):
+    """Interrompe uma tarefa em segundo plano em execução."""
+    success = service.stop_background_task(conversation_id, task_id)
+    return {"success": success, "task_id": task_id}
+
+# ----------------- MÉTRICAS DE TOKENS E MODELOS -----------------
+
+@app.get("/api/conversations/{conversation_id}/token-stats", dependencies=[Depends(verify_token)])
+def get_token_stats(conversation_id: str):
+    """Retorna estatísticas detalhadas de uso de tokens e janela de contexto."""
+    return service.get_token_usage_stats(conversation_id)
+
+# ----------------- CATÁLOGO DE SKILLS DO ANTIGRAVITY -----------------
+
+@app.get("/api/skills", dependencies=[Depends(verify_token)])
+def list_skills():
+    """Lista todas as 55+ skills instaladas no computador com categorias e descrições."""
+    return {"skills": service.list_installed_skills()}
+
+@app.get("/api/skills/{skill_name}", dependencies=[Depends(verify_token)])
+def get_skill_details(skill_name: str):
+    """Retorna detalhes e conteúdo de um SKILL.md específico."""
+    details = service.get_skill_details(skill_name)
+    if not details:
+        raise HTTPException(status_code=404, detail="Skill não encontrada.")
+    return details
+
+# ----------------- SUGESTÕES INTELIGENTES -----------------
+
+@app.get("/api/conversations/{conversation_id}/suggestions", dependencies=[Depends(verify_token)])
+def get_suggestions(conversation_id: str, project_id: Optional[str] = None):
+    """Retorna sugestões rápidas de ações contextuais para a conversa ativa."""
+    return {"suggestions": service.get_contextual_suggestions(conversation_id, project_id)}
+
 # ----------------- WEBSOCKET DE STREAMING -----------------
 
 @app.websocket("/api/conversations/{conversation_id}/stream")

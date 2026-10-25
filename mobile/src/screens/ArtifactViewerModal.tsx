@@ -11,7 +11,7 @@ import {
   Clipboard,
   Platform,
 } from 'react-native';
-import { X, FileText, Copy, Check, ArrowLeft, Image as ImageIcon } from 'lucide-react-native';
+import { X, FileText, Copy, Check, ArrowLeft, Image as ImageIcon, Play } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Markdown from 'react-native-markdown-display';
 import { api } from '../services/api';
@@ -21,12 +21,14 @@ interface ArtifactViewerModalProps {
   visible: boolean;
   conversationId: string;
   onClose: () => void;
+  onProceedSent?: () => void;
 }
 
 export default function ArtifactViewerModal({
   visible,
   conversationId,
   onClose,
+  onProceedSent,
 }: ArtifactViewerModalProps) {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
@@ -34,6 +36,7 @@ export default function ArtifactViewerModal({
   const [isLoadingList, setIsLoadingList] = useState(true);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isProceeding, setIsProceeding] = useState(false);
 
   useEffect(() => {
     if (visible && conversationId) {
@@ -52,6 +55,20 @@ export default function ArtifactViewerModal({
       console.error('Erro ao carregar artefatos:', e);
     } finally {
       setIsLoadingList(false);
+    }
+  };
+
+  const handleProceed = async () => {
+    setIsProceeding(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    try {
+      await api.sendMessage(conversationId, 'Proceed');
+      onProceedSent?.();
+      onClose();
+    } catch (e) {
+      console.error('Erro ao enviar Proceed:', e);
+    } finally {
+      setIsProceeding(false);
     }
   };
 
@@ -117,30 +134,52 @@ export default function ArtifactViewerModal({
               <Text style={styles.loadingText}>Carregando artefatos...</Text>
             </View>
           ) : selectedArtifact ? (
-            isLoadingContent ? (
-              <View style={styles.centerLoading}>
-                <ActivityIndicator size="large" color="#38bdf8" />
-                <Text style={styles.loadingText}>Abrindo arquivo...</Text>
-              </View>
-            ) : contentData?.is_binary ? (
-              <ScrollView contentContainerStyle={styles.imageScroll}>
-                <Image
-                  source={{ uri: `data:image/png;base64,${contentData.base64_data}` }}
-                  style={styles.artifactImage}
-                  resizeMode="contain"
-                />
-              </ScrollView>
-            ) : (
-              <ScrollView contentContainerStyle={styles.textScroll}>
-                {selectedArtifact?.is_markdown ? (
-                  <Markdown style={markdownStyles}>
-                    {contentData?.content || ''}
-                  </Markdown>
-                ) : (
-                  <Text style={styles.artifactText}>{contentData?.content}</Text>
-                )}
-              </ScrollView>
-            )
+            <View style={{ flex: 1 }}>
+              {isLoadingContent ? (
+                <View style={styles.centerLoading}>
+                  <ActivityIndicator size="large" color="#38bdf8" />
+                  <Text style={styles.loadingText}>Abrindo arquivo...</Text>
+                </View>
+              ) : contentData?.is_binary ? (
+                <ScrollView contentContainerStyle={styles.imageScroll}>
+                  <Image
+                    source={{ uri: `data:image/png;base64,${contentData.base64_data}` }}
+                    style={styles.artifactImage}
+                    resizeMode="contain"
+                  />
+                </ScrollView>
+              ) : (
+                <ScrollView contentContainerStyle={styles.textScroll}>
+                  {selectedArtifact?.is_markdown ? (
+                    <Markdown style={markdownStyles}>
+                      {contentData?.content || ''}
+                    </Markdown>
+                  ) : (
+                    <Text style={styles.artifactText}>{contentData?.content}</Text>
+                  )}
+                </ScrollView>
+              )}
+
+              {(selectedArtifact?.request_feedback || contentData?.request_feedback || selectedArtifact?.name.toLowerCase().includes('plan')) && (
+                <View style={styles.proceedFooter}>
+                  <TouchableOpacity
+                    style={[styles.proceedBtn, isProceeding && styles.proceedBtnDisabled]}
+                    onPress={handleProceed}
+                    disabled={isProceeding}
+                    activeOpacity={0.8}
+                  >
+                    {isProceeding ? (
+                      <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 8 }} />
+                    ) : (
+                      <Play size={18} color="#ffffff" fill="#ffffff" style={{ marginRight: 8 }} />
+                    )}
+                    <Text style={styles.proceedBtnText}>
+                      {isProceeding ? 'Enviando Proceed...' : 'Proceed (Executar Plano)'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
           ) : (
             <ScrollView contentContainerStyle={styles.listScroll}>
               {artifacts.length === 0 ? (
@@ -201,6 +240,34 @@ const styles = StyleSheet.create({
     height: '85%',
     borderWidth: 1,
     borderColor: '#1e293b',
+  },
+  proceedFooter: {
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+    backgroundColor: '#131d2e',
+  },
+  proceedBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#059669',
+    paddingVertical: 14,
+    borderRadius: 12,
+    shadowColor: '#10b981',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  proceedBtnDisabled: {
+    opacity: 0.6,
+  },
+  proceedBtnText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
   header: {
     flexDirection: 'row',

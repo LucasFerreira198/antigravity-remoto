@@ -59,6 +59,51 @@ export interface Artifact {
   user_facing: boolean;
   is_markdown: boolean;
   is_image: boolean;
+  request_feedback?: boolean;
+}
+
+export interface BackgroundTask {
+  task_id: string;
+  full_id: string;
+  description: string;
+  created_at: string;
+  status: 'running' | 'completed' | 'failed';
+  is_daemon: boolean;
+  tool_name: string;
+  log_size?: number;
+  log_tail?: string;
+}
+
+export interface TokenStats {
+  conversation_id: string;
+  steps_count: number;
+  current_context_tokens: number;
+  context_window_size: number;
+  context_percent_used: number;
+  latest_input_tokens: number;
+  latest_cache_read_tokens: number;
+  latest_output_tokens: number;
+  total_output_tokens: number;
+  cache_savings_percent: number;
+  active_model: string;
+}
+
+export interface Skill {
+  name: string;
+  folder_name: string;
+  description: string;
+  category: string;
+  path: string;
+  content?: string;
+}
+
+export interface SuggestionItem {
+  id: string;
+  title: string;
+  prompt: string;
+  type?: 'fill_input' | 'instant_execute';
+  highlight?: boolean;
+  icon?: string;
 }
 
 export interface Project {

@@ -16,6 +16,7 @@ import {
   ScrollView,
   Keyboard,
   Animated,
+  AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -42,6 +43,14 @@ import {
   Circle,
   Clock,
   Laptop,
+  Play,
+  Cpu,
+  Zap,
+  Smartphone,
+  CheckCircle2,
+  Eye,
+  Archive,
+  Target,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
@@ -49,7 +58,10 @@ import Markdown from 'react-native-markdown-display';
 import { api } from '../services/api';
 import { StorageService } from '../services/storage';
 import { ConversationWebSocket } from '../services/websocket';
-import { Conversation, Message, Artifact, ToolCall, QuestionItem, MediaItem } from '../types';
+import { Conversation, Message, Artifact, ToolCall, QuestionItem, MediaItem, BackgroundTask, TokenStats, SuggestionItem } from '../types';
+import BackgroundTasksModal from './BackgroundTasksModal';
+import SkillsCatalogModal from './SkillsCatalogModal';
+import { notificationService } from '../services/notificationService';
 
 interface ChatScreenProps {
   conversation: Conversation;
@@ -79,6 +91,26 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [localQueue, setLocalQueue] = useState<QueueItem[]>([]);
   const [serverQueue, setServerQueue] = useState<QueueItem[]>([]);
   const [desktopPendingText, setDesktopPendingText] = useState<string>('');
+
+  // Novos estados para Tarefas em Segundo Plano, Tokens e Skills
+  const [tasks, setTasks] = useState<BackgroundTask[]>([]);
+  const [tokenStats, setTokenStats] = useState<TokenStats | null>(null);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [showTasksModal, setShowTasksModal] = useState(false);
+  const [showSkillsModal, setShowSkillsModal] = useState(false);
+  const [showTokensModal, setShowTokensModal] = useState(false);
+  const prevIsActiveRef = useRef<boolean>(false);
+
+  // Detecção de Plano Aguardando Aprovação (Proceed)
+  const latestPlanArtifact = useMemo(() => {
+    return artifacts.find((a) => a.request_feedback || a.name.toLowerCase().includes('plan')) || null;
+  }, [artifacts]);
+  const hasPendingPlan = !!latestPlanArtifact;
+
+  // Contagem de tarefas ativas
+  const runningTasksCount = useMemo(() => {
+    return tasks.filter((t) => t.status === 'running').length;
+  }, [tasks]);
 
   // Fila combinada sem duplicatas (PC e Celular)
   const combinedQueue = useMemo(() => {
@@ -166,6 +198,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
     // Busca fresca na rede em segundo plano
     loadHistory(false);
+    loadAuxData();
 
     // WebSocket em tempo real com eventos ao vivo
     const ws = new ConversationWebSocket(conversation.id, (payload) => {
@@ -181,21 +214,40 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         const fresh = await api.getConversation(conversation.id);
         if (fresh && fresh.messages) {
           setMessages((prev) => {
-            if (fresh.messages.length !== prev.length) {
+            const freshUserContents = fresh.messages
+              .filter((m) => m.role === 'user')
+              .map((m) => (m.content || '').trim());
+            const pendingOptimistic = prev.filter(
+              (m) =>
+                m.role === 'user' &&
+                m.type === 'user_message' &&
+                !freshUserContents.includes((m.content || '').trim())
+            );
+            const combined = [...fresh.messages, ...pendingOptimistic];
+
+            if (combined.length !== prev.length) {
               StorageService.saveChatCache(conversation.id, fresh.messages, fresh.artifacts || []);
               setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-              return fresh.messages;
+              return combined;
             }
-            // Checar se a última mensagem mudou (ex: progresso de stream ou novo tool call)
             if (prev.length > 0 && fresh.messages.length > 0) {
               const lastP = prev[prev.length - 1];
               const lastF = fresh.messages[fresh.messages.length - 1];
               if (lastP.content !== lastF.content || lastP.step_index !== lastF.step_index || lastP.type !== lastF.type) {
-                return fresh.messages;
+                return combined;
               }
             }
             return prev;
           });
+
+          // Notificação Android se o assistente finalizou e o app está em background ou outra tela
+          if (prevIsActiveRef.current && fresh.is_active === false) {
+            if (AppState.currentState !== 'active') {
+              notificationService.notifyTaskCompleted(conversation.title, conversation.id);
+            }
+          }
+          prevIsActiveRef.current = !!fresh.is_active;
+
           if (fresh.is_active !== undefined) {
             setIsActive(fresh.is_active);
           }
@@ -298,6 +350,19 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     }
   };
 
+  const loadAuxData = async () => {
+    try {
+      const [ts, bgTasks, suggs] = await Promise.all([
+        api.getTokenStats(conversation.id).catch(() => null),
+        api.getBackgroundTasks(conversation.id).catch(() => []),
+        api.getSuggestions(conversation.id).catch(() => []),
+      ]);
+      if (ts) setTokenStats(ts);
+      if (bgTasks) setTasks(bgTasks);
+      if (suggs) setSuggestions(suggs);
+    } catch (e) {}
+  };
+
   // Envio de mensagem ou resposta interativa
   const handleSend = async (overrideText?: string) => {
     const textToSend = (overrideText || inputPrompt).trim();
@@ -309,13 +374,23 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     setSelectedImage(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Se o assistente já estiver trabalhando, registrar na fila local
+    // Se o assistente já estiver trabalhando, registrar na fila do PC e local sem criar falso balão de chat que some
     if (isActive) {
       const qId = Date.now().toString();
       setLocalQueue((prev) => [...prev, { id: qId, content: textToSend, source: 'mobile' }]);
+      setIsSending(true);
+      try {
+        await api.sendMessage(conversation.id, textToSend, undefined, imagePayload);
+        loadAuxData();
+      } catch (e) {
+        console.error('Erro ao enviar mensagem para a fila:', e);
+      } finally {
+        setIsSending(false);
+      }
+      return;
     }
 
-    // Mensagem otimista imediata na tela
+    // Mensagem otimista imediata na tela (quando o agente está livre)
     const tempIndex = messages.length ? Math.max(...messages.map((m) => m.step_index)) + 1 : 1;
     const optimisticMsg: Message = {
       role: 'user',
@@ -335,6 +410,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
     try {
       await api.sendMessage(conversation.id, textToSend, undefined, imagePayload);
+      loadAuxData();
 
       // Polling de garantia enquanto o modelo responde
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
@@ -343,14 +419,25 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         attempts++;
         try {
           const fresh = await api.getConversation(conversation.id);
-          if (fresh.messages && fresh.messages.length > 0) {
-            setMessages(fresh.messages);
+          if (fresh && fresh.messages) {
+            setMessages((prev) => {
+              const freshUserContents = fresh.messages
+                .filter((m) => m.role === 'user')
+                .map((m) => (m.content || '').trim());
+              const pendingOptimistic = prev.filter(
+                (m) =>
+                  m.role === 'user' &&
+                  m.type === 'user_message' &&
+                  !freshUserContents.includes((m.content || '').trim())
+              );
+              return [...fresh.messages, ...pendingOptimistic];
+            });
             if (fresh.artifacts) setArtifacts(fresh.artifacts);
             if (!fresh.is_active) {
-              setLocalQueue([]);
               setIsSending(false);
               setIsActive(false);
               clearInterval(pollTimerRef.current);
+              loadAuxData();
             }
           }
         } catch (e) {}
@@ -358,7 +445,6 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           clearInterval(pollTimerRef.current);
           setIsSending(false);
           setIsActive(false);
-          setLocalQueue([]);
         }
       }, 1000);
 
@@ -606,17 +692,52 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           </View>
         </View>
 
-        {artifacts.length > 0 && (
-          <TouchableOpacity
-            style={styles.artifactsBtn}
-            onPress={() => onOpenArtifacts(conversation.id)}
-          >
-            <FileText size={18} color="#38bdf8" />
-            <View style={styles.artifactsBadge}>
-              <Text style={styles.artifactsBadgeText}>{artifacts.length}</Text>
-            </View>
-          </TouchableOpacity>
-        )}
+        <View style={styles.headerRightActions}>
+          {/* Badge de Tarefas em Segundo Plano */}
+          {runningTasksCount > 0 && (
+            <TouchableOpacity
+              style={styles.tasksHeaderBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowTasksModal(true);
+              }}
+            >
+              <Terminal size={15} color="#4ade80" />
+              <View style={styles.tasksHeaderBadge}>
+                <Text style={styles.tasksHeaderBadgeText}>{runningTasksCount}</Text>
+              </View>
+            </TouchableOpacity>
+          )}
+
+          {/* Badge de Tokens & Modelo */}
+          {tokenStats && tokenStats.current_context_tokens > 0 && (
+            <TouchableOpacity
+              style={styles.tokensHeaderBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowTokensModal(true);
+              }}
+            >
+              <Cpu size={15} color="#38bdf8" />
+              <Text style={styles.tokensHeaderText}>
+                {(tokenStats.current_context_tokens / 1000).toFixed(0)}k
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Botão de Artefatos */}
+          {artifacts.length > 0 && (
+            <TouchableOpacity
+              style={[styles.artifactsBtn, hasPendingPlan && styles.artifactsBtnHighlight]}
+              onPress={() => onOpenArtifacts(conversation.id)}
+            >
+              <FileText size={18} color={hasPendingPlan ? '#34d399' : '#38bdf8'} />
+              <View style={[styles.artifactsBadge, hasPendingPlan && { backgroundColor: '#059669' }]}>
+                <Text style={styles.artifactsBadgeText}>{artifacts.length}</Text>
+              </View>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
       {/* Lista de Mensagens & Timeline do Desktop */}
@@ -869,22 +990,30 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                 </Text>
               </View>
               <View style={styles.queuedActionRow}>
-                <TouchableOpacity
-                  style={styles.queuedSendBtn}
-                  onPress={() => {
-                    handleSend(item.content);
-                    setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
-                    setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
-                  }}
-                >
-                  <Send size={11} color="#ffffff" style={{ marginRight: 4 }} />
-                  <Text style={styles.queuedSendBtnText}>Enviar</Text>
-                </TouchableOpacity>
+                {!isActive ? (
+                  <TouchableOpacity
+                    style={styles.queuedSendBtn}
+                    onPress={() => {
+                      handleSend(item.content);
+                      setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                      setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
+                    }}
+                  >
+                    <Send size={11} color="#ffffff" style={{ marginRight: 4 }} />
+                    <Text style={styles.queuedSendBtnText}>Enviar Agora</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.queuedWaitingPill}>
+                    <Clock size={11} color="#f59e0b" style={{ marginRight: 4 }} />
+                    <Text style={styles.queuedWaitingPillText}>Na fila do PC...</Text>
+                  </View>
+                )}
                 <TouchableOpacity
                   style={styles.queuedEditBtn}
                   onPress={() => {
                     setInputPrompt(item.content);
                     setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                    setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
                   }}
                 >
                   <Text style={styles.queuedEditText}>Editar</Text>
@@ -902,6 +1031,73 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             </View>
           ))}
         </View>
+      )}
+
+      {/* Banner de Plano Pronto para Aprovação (Proceed) */}
+      {hasPendingPlan && !isActive && (
+        <View style={styles.proceedCard}>
+          <View style={styles.proceedCardLeft}>
+            <View style={styles.proceedIconCircle}>
+              <Play size={14} color="#ffffff" fill="#ffffff" />
+            </View>
+            <View style={{ flex: 1, marginRight: 8 }}>
+              <Text style={styles.proceedCardTitle}>Plano Pronto para Execução</Text>
+              <Text style={styles.proceedCardSub} numberOfLines={1}>
+                {latestPlanArtifact?.summary || 'O agente elaborou um plano e aguarda aprovação.'}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.proceedCardButtons}>
+            <TouchableOpacity
+              style={styles.proceedViewBtn}
+              onPress={() => onOpenArtifacts(conversation.id)}
+            >
+              <Text style={styles.proceedViewBtnText}>Ver Plano</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.proceedActionBtn, isSending && styles.proceedActionBtnDisabled]}
+              onPress={() => handleSend('Proceed')}
+              disabled={isSending}
+            >
+              <Play size={12} color="#ffffff" fill="#ffffff" style={{ marginRight: 5 }} />
+              <Text style={styles.proceedActionBtnText}>Proceed</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Sugestões Inteligentes de Comandos Contextuais */}
+      {suggestions.length > 0 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.suggestionsScroll}>
+          {suggestions.map((sug) => {
+            const isHighlight = sug.highlight;
+            return (
+              <TouchableOpacity
+                key={sug.id}
+                style={[styles.suggestionChip, isHighlight && styles.suggestionChipHighlight]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  if (sug.type === 'instant_execute') {
+                    handleSend(sug.prompt);
+                  } else {
+                    setInputPrompt(sug.prompt);
+                  }
+                }}
+              >
+                {sug.icon === 'play' && <Play size={11} color="#ffffff" fill="#ffffff" style={{ marginRight: 4 }} />}
+                {sug.icon === 'smartphone' && <Smartphone size={11} color="#38bdf8" style={{ marginRight: 4 }} />}
+                {sug.icon === 'check-circle' && <CheckCircle2 size={11} color="#34d399" style={{ marginRight: 4 }} />}
+                {sug.icon === 'eye' && <Eye size={11} color="#f59e0b" style={{ marginRight: 4 }} />}
+                {sug.icon === 'zap' && <Zap size={11} color="#eab308" style={{ marginRight: 4 }} />}
+                {sug.icon === 'archive' && <Archive size={11} color="#94a3b8" style={{ marginRight: 4 }} />}
+                {sug.icon === 'target' && <Target size={11} color="#a855f7" style={{ marginRight: 4 }} />}
+                <Text style={[styles.suggestionChipText, isHighlight && styles.suggestionChipTextHighlight]}>
+                  {sug.title}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
       )}
 
       {/* Barra de Ações Rápidas (Slash Commands) */}
@@ -928,6 +1124,17 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           onPress={() => setShowImagePickerModal(true)}
         >
           <ImageIcon size={20} color="#38bdf8" />
+        </TouchableOpacity>
+
+        {/* Botão de Catálogo de Skills */}
+        <TouchableOpacity
+          style={styles.skillsBtn}
+          onPress={() => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setShowSkillsModal(true);
+          }}
+        >
+          <Sparkles size={18} color="#a855f7" />
         </TouchableOpacity>
 
         <TextInput
@@ -989,6 +1196,104 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             >
               <Text style={[styles.pickerOptionText, { color: '#ef4444' }]}>Cancelar</Text>
             </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Modal de Tarefas em Segundo Plano */}
+      <BackgroundTasksModal
+        visible={showTasksModal}
+        conversationId={conversation.id}
+        onClose={() => setShowTasksModal(false)}
+      />
+
+      {/* Modal de Catálogo de Skills */}
+      <SkillsCatalogModal
+        visible={showSkillsModal}
+        onClose={() => setShowSkillsModal(false)}
+        onSelectSkill={(prompt) => {
+          setInputPrompt((prev) => (prev ? `${prev} ${prompt}` : prompt));
+        }}
+      />
+
+      {/* Modal de Detalhes de Tokens & Totem do Modelo */}
+      <Modal
+        visible={showTokensModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowTokensModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowTokensModal(false)}
+        >
+          <View style={styles.tokenModalCard}>
+            <View style={styles.tokenModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Cpu size={18} color="#38bdf8" style={{ marginRight: 8 }} />
+                <Text style={styles.tokenModalTitle}>Totem do Modelo & Janela</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowTokensModal(false)}>
+                <X size={18} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            {tokenStats ? (
+              <View style={styles.tokenModalBody}>
+                <View style={styles.tokenRow}>
+                  <Text style={styles.tokenLabel}>Modelo Ativo</Text>
+                  <Text style={styles.tokenValueHighlight}>{tokenStats.active_model}</Text>
+                </View>
+
+                <View style={styles.tokenProgressWrap}>
+                  <View style={styles.tokenProgressHeader}>
+                    <Text style={styles.tokenProgressLabel}>Janela de Contexto Utilizada</Text>
+                    <Text style={styles.tokenProgressPercent}>{tokenStats.context_percent_used}%</Text>
+                  </View>
+                  <View style={styles.tokenProgressBar}>
+                    <View
+                      style={[
+                        styles.tokenProgressFill,
+                        { width: `${Math.min(tokenStats.context_percent_used, 100)}%` },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.tokenProgressDetails}>
+                    {tokenStats.current_context_tokens.toLocaleString()} /{' '}
+                    {tokenStats.context_window_size.toLocaleString()} tokens
+                  </Text>
+                </View>
+
+                <View style={styles.tokenStatsGrid}>
+                  <View style={styles.tokenGridItem}>
+                    <Text style={styles.tokenGridTitle}>Cache Read</Text>
+                    <Text style={styles.tokenGridValue}>
+                      {tokenStats.latest_cache_read_tokens.toLocaleString()}
+                    </Text>
+                    <Text style={styles.tokenGridSub}>{tokenStats.cache_savings_percent}% economia</Text>
+                  </View>
+                  <View style={styles.tokenGridItem}>
+                    <Text style={styles.tokenGridTitle}>Prompt Recente</Text>
+                    <Text style={styles.tokenGridValue}>
+                      {tokenStats.latest_input_tokens.toLocaleString()}
+                    </Text>
+                    <Text style={styles.tokenGridSub}>tokens entrada</Text>
+                  </View>
+                  <View style={styles.tokenGridItem}>
+                    <Text style={styles.tokenGridTitle}>Tokens Resposta</Text>
+                    <Text style={styles.tokenGridValue}>
+                      {tokenStats.latest_output_tokens.toLocaleString()}
+                    </Text>
+                    <Text style={styles.tokenGridSub}>gerados agora</Text>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View style={{ padding: 24, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color="#38bdf8" />
+              </View>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
@@ -1601,6 +1906,288 @@ const styles = StyleSheet.create({
     color: '#fafafa',
     fontSize: 14,
     fontWeight: '500',
+  },
+  headerRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  tasksHeaderBtn: {
+    position: 'relative',
+    padding: 8,
+    backgroundColor: '#18181b',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(74, 222, 128, 0.4)',
+  },
+  tasksHeaderBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: '#22c55e',
+    borderRadius: 9,
+    width: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tasksHeaderBadgeText: {
+    color: '#000000',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  tokensHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: '#18181b',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    gap: 4,
+  },
+  tokensHeaderText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  artifactsBtnHighlight: {
+    borderColor: 'rgba(52, 211, 153, 0.6)',
+    backgroundColor: 'rgba(52, 211, 153, 0.1)',
+  },
+  proceedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#064e3b',
+    borderWidth: 1,
+    borderColor: '#059669',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginHorizontal: 14,
+    marginBottom: 8,
+    shadowColor: '#10b981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  proceedCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  proceedIconCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#10b981',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  proceedCardTitle: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  proceedCardSub: {
+    color: '#a7f3d0',
+    fontSize: 11,
+    marginTop: 1,
+  },
+  proceedCardButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  proceedViewBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  proceedViewBtnText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  proceedActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10b981',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  proceedActionBtnDisabled: {
+    opacity: 0.6,
+  },
+  proceedActionBtnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  suggestionsScroll: {
+    maxHeight: 38,
+    paddingHorizontal: 14,
+    marginBottom: 6,
+  },
+  suggestionChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginRight: 8,
+    alignSelf: 'center',
+  },
+  suggestionChipHighlight: {
+    backgroundColor: '#064e3b',
+    borderColor: '#10b981',
+  },
+  suggestionChipText: {
+    color: '#a1a1aa',
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  suggestionChipTextHighlight: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  skillsBtn: {
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    marginRight: 8,
+  },
+  queuedWaitingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  queuedWaitingPillText: {
+    color: '#f59e0b',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  tokenModalCard: {
+    backgroundColor: '#09090b',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#27272a',
+  },
+  tokenModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#27272a',
+    marginBottom: 14,
+  },
+  tokenModalTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  tokenModalBody: {
+    gap: 14,
+  },
+  tokenRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  tokenLabel: {
+    color: '#71717a',
+    fontSize: 13,
+  },
+  tokenValueHighlight: {
+    color: '#38bdf8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  tokenProgressWrap: {
+    backgroundColor: '#141418',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#27272a',
+  },
+  tokenProgressHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  tokenProgressLabel: {
+    color: '#a1a1aa',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  tokenProgressPercent: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  tokenProgressBar: {
+    height: 8,
+    backgroundColor: '#27272a',
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: 6,
+  },
+  tokenProgressFill: {
+    height: '100%',
+    backgroundColor: '#38bdf8',
+    borderRadius: 4,
+  },
+  tokenProgressDetails: {
+    color: '#71717a',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  tokenStatsGrid: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  tokenGridItem: {
+    flex: 1,
+    backgroundColor: '#141418',
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#27272a',
+    alignItems: 'center',
+  },
+  tokenGridTitle: {
+    color: '#71717a',
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  tokenGridValue: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  tokenGridSub: {
+    color: '#22c55e',
+    fontSize: 10,
+    marginTop: 2,
   },
 });
 

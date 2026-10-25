@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, View, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import * as Notifications from 'expo-notifications';
 
 import { StorageService } from './src/services/storage';
 import { api } from './src/services/api';
+import { notificationService } from './src/services/notificationService';
 import { Conversation } from './src/types';
 
 import ConnectScreen from './src/screens/ConnectScreen';
@@ -30,6 +32,52 @@ export default function App() {
     conversationId: '',
   });
   const [updateModalVisible, setUpdateModalVisible] = useState(false);
+  const activeConversationsRef = useRef<Record<string, boolean>>({});
+
+  // Inicializar notificações e escutar toques do usuário
+  useEffect(() => {
+    notificationService.init();
+
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data && typeof data === 'object' && 'conversationId' in data && (data as any).conversationId) {
+        const convoId = String((data as any).conversationId);
+        api.getConversation(convoId).then((convo) => {
+          if (convo) {
+            setSelectedConversation(convo as any);
+            setCurrentScreen('chat');
+          }
+        }).catch(() => {});
+      }
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, []);
+
+  // Monitor em segundo plano para notificar quando tarefas terminam enquanto o usuário está em outra tela
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const monitorInterval = setInterval(async () => {
+      try {
+        const convos = await api.getConversations(25);
+        for (const c of convos) {
+          const wasActive = activeConversationsRef.current[c.id];
+          if (wasActive && !c.is_active) {
+            // Se o usuário estiver em outra tela ou em outra conversa, disparar notificação Android
+            if (currentScreen !== 'chat' || selectedConversation?.id !== c.id) {
+              notificationService.notifyTaskCompleted(c.title, c.id);
+            }
+          }
+          activeConversationsRef.current[c.id] = !!c.is_active;
+        }
+      } catch (e) {}
+    }, 4000);
+
+    return () => clearInterval(monitorInterval);
+  }, [isConnected, currentScreen, selectedConversation?.id]);
 
   // Verificar credenciais salvas no início e checar updates
   useEffect(() => {
@@ -190,6 +238,16 @@ export default function App() {
               visible={artifactModalData.visible}
               conversationId={artifactModalData.conversationId}
               onClose={() => setArtifactModalData({ visible: false, conversationId: '' })}
+              onProceedSent={() => {
+                if (currentScreen !== 'chat') {
+                  api.getConversation(artifactModalData.conversationId).then((convo) => {
+                    if (convo) {
+                      setSelectedConversation(convo as any);
+                      setCurrentScreen('chat');
+                    }
+                  }).catch(() => {});
+                }
+              }}
             />
 
             {/* Modal de Atualização Automática do App */}

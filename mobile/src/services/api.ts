@@ -1,4 +1,4 @@
-import { Conversation, Message, Artifact, Project, AntigravitySettings } from '../types';
+import { Conversation, Message, Artifact, Project, AntigravitySettings, BackgroundTask, TokenStats, Skill, SuggestionItem } from '../types';
 import { StorageService } from './storage';
 
 class ApiService {
@@ -147,6 +147,37 @@ class ApiService {
 
   async getArtifact(conversationId: string, filename: string): Promise<any> {
     return this.request(`/api/artifacts/${encodeURIComponent(conversationId)}/${encodeURIComponent(filename)}`);
+  }
+
+  async getBackgroundTasks(conversationId: string): Promise<BackgroundTask[]> {
+    const res = await this.request<{ tasks: BackgroundTask[] }>(`/api/conversations/${encodeURIComponent(conversationId)}/background-tasks`);
+    return res.tasks || [];
+  }
+
+  async stopBackgroundTask(conversationId: string, taskId: string): Promise<boolean> {
+    const res = await this.request<{ success: boolean }>(`/api/conversations/${encodeURIComponent(conversationId)}/background-tasks/${encodeURIComponent(taskId)}/stop`, {
+      method: 'POST'
+    });
+    return res.success;
+  }
+
+  async getTokenStats(conversationId: string): Promise<TokenStats> {
+    return this.request<TokenStats>(`/api/conversations/${encodeURIComponent(conversationId)}/token-stats`);
+  }
+
+  async getSkills(): Promise<Skill[]> {
+    const res = await this.request<{ skills: Skill[] }>('/api/skills');
+    return res.skills || [];
+  }
+
+  async getSkillDetails(skillName: string): Promise<Skill> {
+    return this.request<Skill>(`/api/skills/${encodeURIComponent(skillName)}`);
+  }
+
+  async getSuggestions(conversationId: string, projectId?: string): Promise<SuggestionItem[]> {
+    const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+    const res = await this.request<{ suggestions: SuggestionItem[] }>(`/api/conversations/${encodeURIComponent(conversationId)}/suggestions${query}`);
+    return res.suggestions || [];
   }
 }
 
