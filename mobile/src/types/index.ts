@@ -79,11 +79,15 @@ export interface ModelInfo {
 export interface BackgroundTask {
   task_id: string;
   full_id: string;
+  name?: string;
   description: string;
   created_at: string;
   status: 'running' | 'completed' | 'failed';
   is_daemon: boolean;
   tool_name: string;
+  pid?: number;
+  port?: number;
+  memory_mb?: number;
   log_size?: number;
   log_tail?: string;
 }

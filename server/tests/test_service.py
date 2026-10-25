@@ -76,3 +76,21 @@ def test_contextual_suggestions():
         assert len(suggestions) > 0
         assert "title" in suggestions[0]
         assert "prompt" in suggestions[0]
+
+def test_get_background_tasks_filtering():
+    service = AntigravityService()
+    convos = service.list_conversations(limit=1)
+    if convos:
+        cid = convos[0]["id"]
+        tasks = service.get_background_tasks(cid)
+        assert isinstance(tasks, list)
+        for t in tasks:
+            assert "task_id" in t
+            assert "status" in t
+            assert "is_daemon" in t
+            # Deve filtrar tarefas efêmeras / lixo de regex
+            assert not t["task_id"].startswith('"')
+            desc = t.get("description", "").lower()
+            assert "pytest" not in desc
+            assert "timer:" not in desc
+            assert "get-childitem" not in desc

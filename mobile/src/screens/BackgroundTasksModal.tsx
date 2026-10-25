@@ -106,9 +106,9 @@ export default function BackgroundTasksModal({
                 <Terminal size={18} color="#38bdf8" />
               </View>
               <View>
-                <Text style={styles.headerTitle}>Processos & Tarefas do PC</Text>
+                <Text style={styles.headerTitle}>Servidores & Processos do PC</Text>
                 <Text style={styles.headerSub}>
-                  {runningCount > 0 ? `⚡ ${runningCount} rodando em segundo plano` : 'Nenhuma tarefa ativa agora'}
+                  {runningCount > 0 ? `⚡ ${runningCount} servidor(es) em execução` : 'Nenhum servidor ativo agora'}
                 </Text>
               </View>
             </View>
@@ -130,9 +130,9 @@ export default function BackgroundTasksModal({
           ) : tasks.length === 0 ? (
             <View style={styles.emptyWrap}>
               <Terminal size={42} color="#27272a" />
-              <Text style={styles.emptyTitle}>Nenhuma tarefa registrada</Text>
+              <Text style={styles.emptyTitle}>Nenhum servidor em execução</Text>
               <Text style={styles.emptyDesc}>
-                Comandos longos executados pelo agente (como servidores, builds ou monitoramentos) aparecerão aqui.
+                Processos persistentes do computador (como o servidor Uvicorn Python, túneis de conexão ou dev servers) aparecerão aqui.
               </Text>
             </View>
           ) : (
@@ -142,6 +142,14 @@ export default function BackgroundTasksModal({
                 {tasks.map((task) => {
                   const isSelected = selectedTask?.task_id === task.task_id;
                   const isRunning = task.status === 'running';
+                  const tabLabel = task.name?.includes('Uvicorn')
+                    ? '🐍 Uvicorn Python'
+                    : task.name?.includes('Cloudflare')
+                    ? '☁️ Cloudflare'
+                    : task.name?.includes('Vite')
+                    ? '⚡ Vite Dev'
+                    : task.name || task.task_id;
+
                   return (
                     <TouchableOpacity
                       key={task.task_id}
@@ -153,7 +161,7 @@ export default function BackgroundTasksModal({
                     >
                       <View style={[styles.statusDot, isRunning ? styles.dotRunning : styles.dotCompleted]} />
                       <Text style={[styles.taskTabText, isSelected && styles.taskTabTextSelected]} numberOfLines={1}>
-                        {task.task_id}
+                        {tabLabel}
                       </Text>
                       {isRunning && <Text style={styles.runningBadgePill}>ATIVO</Text>}
                     </TouchableOpacity>
@@ -166,6 +174,9 @@ export default function BackgroundTasksModal({
                 <View style={styles.taskDetailWrap}>
                   <View style={styles.taskDetailHeader}>
                     <View style={{ flex: 1 }}>
+                      <Text style={styles.taskFriendlyTitle}>
+                        {selectedTask.name || selectedTask.task_id}
+                      </Text>
                       <Text style={styles.taskCommandText} numberOfLines={2}>
                         {selectedTask.description}
                       </Text>
@@ -188,6 +199,21 @@ export default function BackgroundTasksModal({
                         {selectedTask.is_daemon && (
                           <View style={[styles.metaBadge, { backgroundColor: 'rgba(56, 189, 248, 0.12)' }]}>
                             <Text style={[styles.metaBadgeText, { color: '#38bdf8' }]}>Daemon / Servidor</Text>
+                          </View>
+                        )}
+                        {selectedTask.port && (
+                          <View style={[styles.metaBadge, { backgroundColor: 'rgba(168, 85, 247, 0.12)' }]}>
+                            <Text style={[styles.metaBadgeText, { color: '#c084fc' }]}>Porta: {selectedTask.port}</Text>
+                          </View>
+                        )}
+                        {selectedTask.pid && (
+                          <View style={[styles.metaBadge, { backgroundColor: 'rgba(234, 179, 8, 0.12)' }]}>
+                            <Text style={[styles.metaBadgeText, { color: '#facc15' }]}>PID: {selectedTask.pid}</Text>
+                          </View>
+                        )}
+                        {selectedTask.memory_mb && (
+                          <View style={[styles.metaBadge, { backgroundColor: 'rgba(52, 211, 153, 0.12)' }]}>
+                            <Text style={[styles.metaBadgeText, { color: '#34d399' }]}>{selectedTask.memory_mb} MB RAM</Text>
                           </View>
                         )}
                       </View>
@@ -388,6 +414,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#27272a',
     marginBottom: 12,
+  },
+  taskFriendlyTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 4,
   },
   taskCommandText: {
     color: '#e4e4e7',

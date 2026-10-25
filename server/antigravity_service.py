@@ -7,6 +7,7 @@ import uuid
 import datetime
 import threading
 import time
+import psutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
 
@@ -659,14 +660,54 @@ class AntigravityService:
             raise
 
     def get_background_tasks(self, conversation_id: str) -> List[Dict[str, Any]]:
-        """Descobre tarefas executadas em segundo plano e monitora status/logs."""
+        """
+        Descobre servidores e processos em segundo plano relevantes (Uvicorn, Python, Cloudflare, dev servers).
+        Filtra tarefas efêmeras desnecessárias (como timers, pytest, tsc, git) mantendo apenas o que realmente importa.
+        """
         brain_dir = self.paths.BRAIN_DIR / conversation_id
         tasks_dir = brain_dir / ".system_generated" / "tasks"
         transcript_file = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
-        
-        tasks: Dict[str, Dict[str, Any]] = {}
-        
-        # 1. Parse do transcript para mapear descrições e comandos
+
+        RELEVANT_PATTERNS = [
+            'uvicorn', 'python -m uvicorn', 'fastapi', 'flask', 'django',
+            'http.server', 'server.main', 'cloudflared', 'tunnel',
+            'npm run dev', 'npm start', 'yarn dev', 'pnpm dev', 'vite', 'next dev',
+            'expo start', 'node server', 'python '
+        ]
+
+        EXCLUDE_PATTERNS = [
+            'timer:', 'schedule', 'prompt: wait', 'npx tsc', 'pytest',
+            'get-childitem', 'select-string', 'asar', 'git ', 'read_file',
+            'write_file', 'inspect_page'
+        ]
+
+        def is_relevant_server(desc: str) -> bool:
+            if not desc:
+                return False
+            d = desc.lower().strip()
+            if any(ex in d for ex in EXCLUDE_PATTERNS):
+                return False
+            return any(pat in d for pat in RELEVANT_PATTERNS)
+
+        def get_friendly_name(desc: str, tool_summary: str = '') -> str:
+            d = (desc or '').lower()
+            s = (tool_summary or '').lower()
+            if 'uvicorn' in d or 'server.main' in d or 'uvicorn' in s:
+                return 'Servidor Uvicorn (FastAPI Python)'
+            if 'cloudflared' in d or 'tunnel' in d:
+                return 'Túnel Cloudflare (Acesso Remoto)'
+            if 'vite' in d:
+                return 'Vite Dev Server'
+            if 'expo' in d or 'metro' in d:
+                return 'Expo Metro Bundler'
+            if 'http.server' in d:
+                return 'Servidor HTTP Local (Python)'
+            if 'python' in d:
+                return 'Processo Python em Background'
+            return tool_summary or 'Servidor em Segundo Plano'
+
+        # 1. Parse do transcript para encontrar tarefas ativas do Antigravity
+        active_tasks_map: Dict[str, Dict[str, Any]] = {}
         if transcript_file.exists():
             try:
                 with open(transcript_file, "r", encoding="utf-8", errors="replace") as f:
@@ -675,69 +716,189 @@ class AntigravityService:
                             continue
                         try:
                             d = json.loads(line)
-                            content = d.get("content", "")
-                            if "Tool is running as a background task with task id:" in content:
-                                m = re.search(r"task id:\s*([^\r\n]+)", content)
-                                desc = re.search(r"Task Description:\s*([^\r\n]+)", content)
+                            c = d.get("content", "")
+                            if "background task(s) currently running:" in c:
+                                m = re.search(r"\[\s*\{.*\}\s*\]", c, re.DOTALL)
                                 if m:
-                                    tid = m.group(1).split("\n")[0].split("\r")[0].strip()
-                                    simple_id = tid.split("/")[-1].split("\\")[-1]
-                                    clean_desc = desc.group(1).split("\n")[0].split("\r")[0].strip() if desc else "Comando em segundo plano"
-                                    tasks[simple_id] = {
-                                        "task_id": simple_id,
-                                        "full_id": tid,
-                                        "description": clean_desc,
-                                        "created_at": d.get("created_at"),
-                                        "status": "running",
-                                        "is_daemon": "IsDaemon" in content or "uvicorn" in content or "server" in content,
-                                        "tool_name": "run_command"
+                                    raw_tasks = json.loads(m.group(0))
+                                    active_tasks_map = {
+                                        t["taskId"].split("/")[-1]: t for t in raw_tasks if "taskId" in t
                                     }
-                            elif "finished with result:" in content:
-                                m = re.search(r"sender=([^\s\r\n]+)", content)
+                            elif "No background tasks are currently running" in c:
+                                active_tasks_map = {}
+                            elif "# Running Background Tasks" in c:
+                                m = re.search(r"# Running Background Tasks[^{]*(\{.*\}|\[.*\])", c, re.DOTALL)
                                 if m:
-                                    tid = m.group(1).split("\n")[0].split("\r")[0].strip().split("/")[-1].split("\\")[-1]
-                                    if tid in tasks:
-                                        tasks[tid]["status"] = "completed"
+                                    raw = m.group(1).strip()
+                                    if raw.startswith("["):
+                                        active_tasks_map = {
+                                            t["taskId"].split("/")[-1]: t for t in json.loads(raw) if "taskId" in t
+                                        }
+                                    elif raw.startswith("{"):
+                                        t = json.loads(raw)
+                                        if "taskId" in t:
+                                            active_tasks_map = {t["taskId"].split("/")[-1]: t}
+                            elif "finished with result:" in c:
+                                m = re.search(r"sender=([^\s\r\n]+)", c)
+                                if m:
+                                    finished_id = m.group(1).split("\n")[0].split("\r")[0].strip().split("/")[-1].split("\\")[-1]
+                                    if finished_id in active_tasks_map:
+                                        active_tasks_map.pop(finished_id, None)
                         except Exception:
                             continue
             except Exception as e:
                 print(f"Erro ao ler transcript para tarefas: {e}")
 
-        # 2. Ler arquivos de logs em tasks_dir para atualizar tarefas ou encontrar logs
-        if tasks_dir.exists():
-            for lf in tasks_dir.glob("task-*.log"):
-                simple_id = lf.stem
-                if simple_id not in tasks:
-                    tasks[simple_id] = {
-                        "task_id": simple_id,
-                        "full_id": f"{conversation_id}/{simple_id}",
-                        "description": f"Tarefa {simple_id}",
-                        "created_at": datetime.datetime.fromtimestamp(lf.stat().st_ctime).isoformat(),
-                        "status": "completed",
-                        "is_daemon": False,
-                        "tool_name": "background_task"
-                    }
-                
+        # 2. Inspecionar processos reais no Sistema Operacional (Windows) com psutil
+        os_uvicorn_pid = None
+        os_uvicorn_cmd = None
+        os_uvicorn_mem = 0
+        os_cloudflared_pid = None
+
+        try:
+            for p in psutil.process_iter(['pid', 'name']):
+                try:
+                    cmd_list = p.cmdline() if p.is_running() else []
+                    cmd_str = ' '.join(cmd_list)
+                    cmd_lower = cmd_str.lower()
+                    if 'uvicorn' in cmd_lower and 'server.main' in cmd_lower:
+                        os_uvicorn_pid = p.pid
+                        os_uvicorn_cmd = cmd_str
+                        try:
+                            os_uvicorn_mem = round(p.memory_info().rss / (1024 * 1024), 1)
+                        except Exception:
+                            os_uvicorn_mem = 0
+                    elif 'cloudflared' in p.name().lower() and '--url' in cmd_lower:
+                        os_cloudflared_pid = p.pid
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
+                    pass
+        except Exception as e:
+            print(f"Erro ao verificar processos psutil: {e}")
+
+        # 3. Construir lista limpa de tarefas
+        result = []
+        matched_uvicorn = False
+
+        for tid, tinfo in active_tasks_map.items():
+            # Validar ID para evitar lixo de regex
+            if not tid or not re.match(r"^task-\d+$", tid):
+                continue
+
+            desc = tinfo.get("description", "")
+            if not is_relevant_server(desc):
+                continue
+
+            # Ler log da tarefa
+            log_tail = ""
+            log_size = 0
+            lf = tasks_dir / f"{tid}.log"
+            if lf.exists():
                 try:
                     log_size = lf.stat().st_size
-                    tasks[simple_id]["log_size"] = log_size
-                    if log_size > 0:
-                        with open(lf, "r", encoding="utf-8", errors="replace") as lg:
-                            lines = lg.readlines()
-                            tasks[simple_id]["log_tail"] = "".join(lines[-40:])
-                    else:
-                        tasks[simple_id]["log_tail"] = "(Aguardando saída de log...)"
+                    with open(lf, "r", encoding="utf-8", errors="replace") as f:
+                        lines = f.readlines()
+                        log_tail = "".join(lines[-60:])
                 except Exception:
-                    tasks[simple_id]["log_tail"] = ""
+                    pass
 
-        task_list = list(tasks.values())
-        task_list.sort(key=lambda t: (0 if t.get("status") == "running" else 1, t.get("task_id", "")), reverse=False)
-        return task_list
+            pid = None
+            if "uvicorn" in desc.lower() and os_uvicorn_pid:
+                pid = os_uvicorn_pid
+                matched_uvicorn = True
+
+            result.append({
+                "task_id": tid,
+                "full_id": tinfo.get("taskId", f"{conversation_id}/{tid}"),
+                "name": get_friendly_name(desc, tinfo.get("toolSummary", "")),
+                "description": desc,
+                "created_at": tinfo.get("startTime") or datetime.datetime.now().isoformat(),
+                "status": "running",
+                "is_daemon": tinfo.get("isDaemon", True),
+                "tool_name": tinfo.get("toolName", "run_command"),
+                "pid": pid,
+                "port": 8765 if "8765" in desc else None,
+                "memory_mb": os_uvicorn_mem if pid else None,
+                "log_size": log_size,
+                "log_tail": log_tail or "(Servidor em execução)"
+            })
+
+        # Se o Uvicorn estiver ativo no SO e não foi capturado do transcript
+        if os_uvicorn_pid and not matched_uvicorn:
+            # Procurar se existe algum log recente de uvicorn em tasks_dir
+            u_log_tail = "Servidor Uvicorn ativo na porta 8765."
+            u_log_size = 0
+            if tasks_dir.exists():
+                logs = sorted(tasks_dir.glob("task-*.log"), key=lambda x: x.stat().st_mtime, reverse=True)
+                for l in logs:
+                    try:
+                        with open(l, "r", encoding="utf-8", errors="replace") as f:
+                            snippet = f.read(2048)
+                            if "Uvicorn running" in snippet or "Started server process" in snippet:
+                                f.seek(0)
+                                u_log_lines = f.readlines()
+                                u_log_tail = "".join(u_log_lines[-60:])
+                                u_log_size = l.stat().st_size
+                                break
+                    except Exception:
+                        pass
+
+            result.append({
+                "task_id": "uvicorn-server",
+                "full_id": f"{conversation_id}/uvicorn-server",
+                "name": "Servidor Uvicorn (FastAPI Python)",
+                "description": os_uvicorn_cmd or "python -m uvicorn server.main:app --host 0.0.0.0 --port 8765",
+                "created_at": datetime.datetime.now().isoformat(),
+                "status": "running",
+                "is_daemon": True,
+                "tool_name": "uvicorn",
+                "pid": os_uvicorn_pid,
+                "port": 8765,
+                "memory_mb": os_uvicorn_mem,
+                "log_size": u_log_size,
+                "log_tail": u_log_tail
+            })
+
+        # Se o túnel Cloudflare estiver ativo no SO
+        if os_cloudflared_pid:
+            result.append({
+                "task_id": "cloudflare-tunnel",
+                "full_id": f"{conversation_id}/cloudflare-tunnel",
+                "name": "Túnel Cloudflare (Acesso Remoto)",
+                "description": "cloudflared tunnel --url http://127.0.0.1:8765",
+                "created_at": datetime.datetime.now().isoformat(),
+                "status": "running",
+                "is_daemon": True,
+                "tool_name": "cloudflared",
+                "pid": os_cloudflared_pid,
+                "port": None,
+                "memory_mb": None,
+                "log_size": 0,
+                "log_tail": "Túnel seguro Cloudflare ativo conectando o aplicativo ao computador."
+            })
+
+        return result
 
     def stop_background_task(self, conversation_id: str, task_id: str) -> bool:
-        """Encerra um processo em segundo plano."""
+        """Encerra um processo em segundo plano de forma segura e eficaz."""
         try:
-            subprocess.run(["powershell", "-Command", f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{task_id}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"], timeout=5)
+            stopped = False
+            for p in psutil.process_iter(['pid', 'name']):
+                try:
+                    cmd_list = p.cmdline() if p.is_running() else []
+                    cmd_str = ' '.join(cmd_list).lower()
+                    if task_id in cmd_str or (task_id.startswith("task-") and "uvicorn" in cmd_str) or ("server.main:app" in cmd_str and "8765" in cmd_str):
+                        p.terminate()
+                        stopped = True
+                    elif task_id in ("cloudflared", "cloudflare-tunnel") and "cloudflared" in p.name().lower():
+                        p.terminate()
+                        stopped = True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            if not stopped:
+                subprocess.run(
+                    ["powershell", "-Command", f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{task_id}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"],
+                    timeout=5
+                )
             return True
         except Exception as e:
             print(f"Erro ao parar tarefa {task_id}: {e}")
