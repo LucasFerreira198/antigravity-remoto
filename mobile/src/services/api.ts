@@ -1,9 +1,11 @@
 import { Conversation, Message, Artifact, Project, AntigravitySettings, BackgroundTask, TokenStats, Skill, SuggestionItem, ModelInfo } from '../types';
 import { StorageService } from './storage';
+import { BridgeResolver } from './bridgeResolver';
 
 class ApiService {
   private baseUrl: string = '';
   private apiKey: string = '';
+  private isResolvingBridge: boolean = false;
 
   constructor() {
     this.init();
@@ -37,18 +39,49 @@ class ApiService {
       }
     }
 
-    const url = `${this.baseUrl}${endpoint}`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'X-API-Key': this.apiKey,
-      'Authorization': `Bearer ${this.apiKey}`,
-      ...(options.headers as Record<string, string> || {})
+    const makeFetch = async (targetBase: string) => {
+      const url = `${targetBase}${endpoint}`;
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.apiKey,
+        'Authorization': `Bearer ${this.apiKey}`,
+        ...(options.headers as Record<string, string> || {})
+      };
+      return fetch(url, { ...options, headers });
     };
 
-    const response = await fetch(url, {
-      ...options,
-      headers
-    });
+    let response: Response;
+    try {
+      response = await makeFetch(this.baseUrl);
+    } catch (networkErr: any) {
+      // Se falhou por UnknownHostException ou queda de túnel, tentar auto-recuperar via Ponte Nuvem
+      if (this.apiKey && !this.isResolvingBridge) {
+        this.isResolvingBridge = true;
+        try {
+          const resolved = await BridgeResolver.resolveWorkingConnection(this.apiKey, undefined);
+          if (resolved.url && resolved.url !== this.baseUrl) {
+            this.baseUrl = resolved.url.replace(/\/+$/, '');
+            const saved = await StorageService.getConnection();
+            if (saved) {
+              await StorageService.saveConnection({
+                ...saved,
+                server_url: this.baseUrl,
+                is_connected: true
+              });
+            }
+            response = await makeFetch(this.baseUrl);
+          } else {
+            throw networkErr;
+          }
+        } catch (resolveErr) {
+          throw networkErr;
+        } finally {
+          this.isResolvingBridge = false;
+        }
+      } else {
+        throw networkErr;
+      }
+    }
 
     if (!response.ok) {
       let errorMsg = `Erro ${response.status}: ${response.statusText}`;

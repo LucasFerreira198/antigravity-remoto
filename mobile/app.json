@@ -2,7 +2,7 @@
   "expo": {
     "name": "Antigravity Remoto",
     "slug": "antigravity-remote",
-    "version": "1.0.15",
+    "version": "1.0.16",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -16,7 +16,7 @@
     },
     "android": {
       "package": "com.lucasferreira.antigravityremote",
-      "versionCode": 16,
+      "versionCode": 17,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#090A0F"

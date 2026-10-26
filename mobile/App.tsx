@@ -6,6 +6,7 @@ import * as Notifications from 'expo-notifications';
 
 import { StorageService } from './src/services/storage';
 import { api } from './src/services/api';
+import { BridgeResolver } from './src/services/bridgeResolver';
 import { notificationService } from './src/services/notificationService';
 import { Conversation } from './src/types';
 
@@ -169,15 +170,36 @@ export default function App() {
 
   const checkInitialConnection = async () => {
     const saved = await StorageService.getConnection();
-    if (saved && saved.server_url && saved.api_key) {
-      api.setCredentials(saved.server_url, saved.api_key);
-      try {
-        await api.getStatus();
-        setIsConnected(true);
-      } catch (e) {
-        // Se a URL pública temporária expirou, mantemos os dados mas permitimos re-conectar
-        setIsConnected(false);
+    if (saved && saved.api_key) {
+      if (saved.server_url) {
+        api.setCredentials(saved.server_url, saved.api_key);
+        try {
+          await api.getStatus();
+          setIsConnected(true);
+          return;
+        } catch (e) {
+          // A URL anterior salva não respondeu; tentar auto-resolver pela ponte em nuvem
+        }
       }
+
+      // Auto-reconexão inteligente sem necessidade de escanear QR Code
+      try {
+        const resolved = await BridgeResolver.resolveWorkingConnection(saved.api_key, saved.server_url);
+        if (resolved && resolved.url) {
+          api.setCredentials(resolved.url, saved.api_key);
+          await StorageService.saveConnection({
+            ...saved,
+            server_url: resolved.url,
+            is_connected: true,
+            last_connected_at: new Date().toISOString(),
+          });
+          setIsConnected(true);
+          return;
+        }
+      } catch (bridgeErr) {
+        // Não foi possível resolver automaticamente; apresentar tela de conexão
+      }
+      setIsConnected(false);
     } else {
       setIsConnected(false);
     }

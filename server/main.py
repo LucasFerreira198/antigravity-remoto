@@ -67,7 +67,13 @@ async def verify_token(
 async def lifespan(app: FastAPI):
     global main_loop
     main_loop = asyncio.get_running_loop()
-    main_loop.run_in_executor(None, lambda: tunnel_manager.start_tunnel(lambda url: tunnel_manager.print_pairing_qr(API_KEY)))
+    main_loop.run_in_executor(
+        None,
+        lambda: tunnel_manager.start_tunnel(
+            api_key=API_KEY,
+            on_url_ready=lambda url: tunnel_manager.print_pairing_qr(API_KEY)
+        )
+    )
     yield
     tunnel_manager.stop_tunnel()
 

@@ -14,11 +14,12 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { QrCode, Server, Key, ArrowRight, X, Globe, CheckCircle2, Cpu, RefreshCw } from 'lucide-react-native';
+import { QrCode, Server, Key, ArrowRight, X, Globe, CheckCircle2, Cpu, RefreshCw, Zap, ShieldCheck } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { colors, isTabletDevice } from '../theme/colors';
 import { api } from '../services/api';
 import { StorageService } from '../services/storage';
+import { BridgeResolver } from '../services/bridgeResolver';
 
 interface ConnectScreenProps {
   onConnected: () => void;
@@ -31,6 +32,7 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
   const [serverUrl, setServerUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [resolvingStatus, setResolvingStatus] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [recentSaved, setRecentSaved] = useState<any>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -45,12 +47,47 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
     });
   }, []);
 
+  const handleAutoBridgeConnect = async () => {
+    const key = (apiKey || recentSaved?.api_key || '').trim();
+    if (!key) {
+      Alert.alert('Atenção', 'Informe o Token de Segurança (API Key) para auto-conectar.');
+      return;
+    }
+
+    setIsLoading(true);
+    setResolvingStatus('Consultando Ponte em Nuvem (Zero-QR)...');
+    try {
+      const resolved = await BridgeResolver.resolveWorkingConnection(key, serverUrl, (step) => {
+        setResolvingStatus(step);
+      });
+      const activeUrl = resolved.url;
+      setServerUrl(activeUrl);
+      const statusData = await api.testConnection(activeUrl, key);
+      api.setCredentials(activeUrl, key);
+      await StorageService.saveConnection({
+        server_url: activeUrl,
+        api_key: key,
+        hostname: statusData?.hostname || 'PC',
+        is_connected: true,
+        last_connected_at: new Date().toISOString(),
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      onConnected();
+    } catch (err: any) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert('Ponte Remota', err.message || 'Não foi possível encontrar o computador na nuvem.');
+    } finally {
+      setIsLoading(false);
+      setResolvingStatus('');
+    }
+  };
+
   const handleConnect = async (urlToUse?: string, keyToUse?: string) => {
-    const url = (urlToUse || serverUrl).trim();
+    let url = (urlToUse || serverUrl).trim();
     const key = (keyToUse || apiKey).trim();
 
-    if (!url) {
-      Alert.alert('Atenção', 'Informe a URL do servidor ponte (ex: https://xxx.trycloudflare.com).');
+    if (!url && !key) {
+      Alert.alert('Atenção', 'Informe os dados de conexão ou use o pareamento automático.');
       return;
     }
     if (!key) {
@@ -59,13 +96,34 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
     }
 
     setIsLoading(true);
+    setResolvingStatus('Verificando endereço...');
     try {
-      const statusData = await api.testConnection(url, key);
+      let statusData: any = null;
+      try {
+        if (url) {
+          statusData = await api.testConnection(url, key);
+        }
+      } catch (directErr) {
+        // Se a conexão direta falhou (ex: URL expirou), tentar auto-resolver na nuvem
+        setResolvingStatus('Buscando novo endereço na Nuvem (Zero-QR)...');
+        const resolved = await BridgeResolver.resolveWorkingConnection(key, url, (s) => setResolvingStatus(s));
+        url = resolved.url;
+        setServerUrl(url);
+        statusData = await api.testConnection(url, key);
+      }
+
+      if (!statusData && !url) {
+        const resolved = await BridgeResolver.resolveWorkingConnection(key, undefined, (s) => setResolvingStatus(s));
+        url = resolved.url;
+        setServerUrl(url);
+        statusData = await api.testConnection(url, key);
+      }
+
       api.setCredentials(url, key);
       await StorageService.saveConnection({
         server_url: url,
         api_key: key,
-        hostname: statusData.hostname || 'PC',
+        hostname: statusData?.hostname || 'PC',
         is_connected: true,
         last_connected_at: new Date().toISOString(),
       });
@@ -77,6 +135,7 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
       Alert.alert('Erro de Conexão', err.message || 'Não foi possível conectar ao computador.');
     } finally {
       setIsLoading(false);
+      setResolvingStatus('');
     }
   };
 
@@ -211,6 +270,27 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
             </View>
           </View>
 
+          {/* Botão de Auto-Reconexão Inteligente (Zero-QR) */}
+          <TouchableOpacity
+            style={styles.autoBridgeCard}
+            onPress={handleAutoBridgeConnect}
+            disabled={isLoading}
+            activeOpacity={0.85}
+          >
+            <View style={styles.autoBridgeIconWrap}>
+              <Zap size={22} color="#ffffff" />
+            </View>
+            <View style={styles.autoBridgeTextWrap}>
+              <Text style={styles.autoBridgeTitle}>Auto-Reconectar via Nuvem (Zero-QR)</Text>
+              <Text style={styles.autoBridgeDesc}>
+                Conecta ao seu PC independente da rede, sem precisar escanear QR Code.
+              </Text>
+            </View>
+            <View style={styles.autoBridgeArrow}>
+              <ArrowRight size={16} color="#ffffff" />
+            </View>
+          </TouchableOpacity>
+
           {/* Atalho QR Code */}
           <TouchableOpacity
             style={styles.qrCard}
@@ -218,14 +298,14 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
             activeOpacity={0.8}
           >
             <View style={styles.qrIconWrap}>
-              <QrCode size={24} color={colors.primaryViolet} />
+              <QrCode size={22} color={colors.accentCyan} />
             </View>
             <View style={styles.qrTextWrap}>
               <Text style={styles.qrTitle}>Escanear Código QR do Terminal</Text>
-              <Text style={styles.qrDesc}>Aponte para o QR Code gerado pelo start-remote.bat</Text>
+              <Text style={styles.qrDesc}>Primeiro pareamento ou novo computador</Text>
             </View>
             <View style={styles.arrowCircle}>
-              <ArrowRight size={16} color={colors.primaryViolet} />
+              <ArrowRight size={16} color={colors.accentCyan} />
             </View>
           </TouchableOpacity>
 
@@ -267,6 +347,13 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
               />
             </View>
 
+            {resolvingStatus ? (
+              <View style={styles.resolvingPill}>
+                <ActivityIndicator size="small" color={colors.accentCyan} style={{ marginRight: 8 }} />
+                <Text style={styles.resolvingText}>{resolvingStatus}</Text>
+              </View>
+            ) : null}
+
             <TouchableOpacity
               style={[styles.connectBtn, isLoading && styles.btnDisabled]}
               onPress={() => handleConnect()}
@@ -274,7 +361,10 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
               activeOpacity={0.85}
             >
               {isLoading ? (
-                <ActivityIndicator color="#ffffff" />
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <ActivityIndicator color="#ffffff" style={{ marginRight: 8 }} />
+                  <Text style={styles.connectBtnText}>{resolvingStatus || 'Conectando...'}</Text>
+                </View>
               ) : (
                 <>
                   <Text style={styles.connectBtnText}>Ligar ao Servidor Antigravity</Text>
@@ -432,6 +522,69 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.statusEmerald,
     fontFamily: 'monospace',
+  },
+  autoBridgeCard: {
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
+    borderRadius: 16,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: colors.primaryViolet,
+    marginBottom: 12,
+    shadowColor: colors.primaryViolet,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  autoBridgeIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: colors.primaryViolet,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  autoBridgeTextWrap: {
+    flex: 1,
+  },
+  autoBridgeTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  autoBridgeDesc: {
+    fontSize: 11,
+    color: '#c4b5fd',
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  autoBridgeArrow: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resolvingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(6, 182, 212, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.accentCyan,
+    marginBottom: 12,
+  },
+  resolvingText: {
+    fontSize: 12,
+    color: colors.accentCyan,
+    fontWeight: '600',
+    flex: 1,
   },
   qrCard: {
     backgroundColor: colors.backgroundElevated,
