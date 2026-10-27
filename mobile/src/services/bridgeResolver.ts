@@ -75,6 +75,26 @@ export interface RendezvousData {
   version?: string;
 }
 
+function firstSuccessful<T>(promises: Promise<T>[]): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (promises.length === 0) {
+      reject(new Error('Nenhum endpoint disponível para teste.'));
+      return;
+    }
+    let rejectedCount = 0;
+    const errors: any[] = [];
+    promises.forEach((p, idx) => {
+      p.then(resolve).catch((err) => {
+        rejectedCount++;
+        errors[idx] = err;
+        if (rejectedCount === promises.length) {
+          reject(new Error('Todos os endpoints falharam na conexão.'));
+        }
+      });
+    });
+  });
+}
+
 export const BridgeResolver = {
   /**
    * Calcula o Bridge ID único e determinístico a partir da API Key do servidor.
@@ -89,7 +109,7 @@ export const BridgeResolver = {
   /**
    * Testa se um endereço de servidor responde positivamente com a API Key fornecida.
    */
-  async testUrl(url: string, apiKey: string, timeoutMs: number = 3500): Promise<boolean> {
+  async testUrl(url: string, apiKey: string, timeoutMs: number = 4500): Promise<boolean> {
     if (!url) return false;
     const cleanUrl = url.replace(/\/+$/, '');
     const controller = new AbortController();
@@ -113,30 +133,35 @@ export const BridgeResolver = {
   },
 
   /**
-   * Consulta o tópico Rendezvous em nuvem para obter as URLs mais recentes do PC.
+   * Consulta o tópico Rendezvous em nuvem para obter todas as URLs candidatas recentes do PC.
    */
-  async fetchRendezvous(bridgeId: string): Promise<RendezvousData | null> {
-    if (!bridgeId) return null;
+  async fetchCandidatesFromCloud(bridgeId: string): Promise<string[]> {
+    if (!bridgeId) return [];
     const endpoint = `https://ntfy.sh/agbridge_${bridgeId}/json?poll=1`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
+    const timer = setTimeout(() => controller.abort(), 6000);
+
+    const candidates: string[] = [];
 
     try {
       const res = await fetch(endpoint, { signal: controller.signal });
       clearTimeout(timer);
-      if (!res.ok) return null;
+      if (!res.ok) return [];
 
       const text = await res.text();
       const lines = text.trim().split('\n').filter(Boolean);
 
-      // Ler do final para o início para obter a mensagem mais recente
+      // Ler do final para o início para priorizar os heartbeats mais recentes
       for (let i = lines.length - 1; i >= 0; i--) {
         try {
           const parsed = JSON.parse(lines[i]);
           if (parsed.event === 'message' && parsed.message) {
             const data: RendezvousData = JSON.parse(parsed.message);
-            if (data.remote_url) {
-              return data;
+            if (data.remote_url && !candidates.includes(data.remote_url)) {
+              candidates.push(data.remote_url);
+            }
+            if (data.local_url && !candidates.includes(data.local_url)) {
+              candidates.push(data.local_url);
             }
           }
         } catch (e) {}
@@ -144,11 +169,12 @@ export const BridgeResolver = {
     } catch (e) {
       clearTimeout(timer);
     }
-    return null;
+    return candidates;
   },
 
   /**
    * Resolve a conexão ativa de forma inteligente e sem necessidade de escanear QR Code.
+   * Testa múltiplos candidatos em paralelo para conexão instantânea e redundante.
    */
   async resolveWorkingConnection(
     apiKey: string,
@@ -160,42 +186,62 @@ export const BridgeResolver = {
       throw new Error('Chave de segurança (API Key) ausente para resolver a ponte.');
     }
 
-    // 1. Testar URL atual primeiro se fornecida
+    onProgress?.('Verificando conexão com o PC...');
+
+    // 1. Se fallbackUrl existir, testá-la rapidamente
     if (fallbackUrl) {
-      onProgress?.('Verificando conexão salva...');
-      const ok = await this.testUrl(fallbackUrl, key, 2500);
-      if (ok) {
-        return { url: fallbackUrl, source: 'current' };
+      const isQuickOk = await this.testUrl(fallbackUrl, key, 2000);
+      if (isQuickOk) {
+        return {
+          url: fallbackUrl,
+          source: fallbackUrl.includes('trycloudflare') ? 'remote' : 'local'
+        };
       }
     }
 
-    // 2. Buscar dados da Ponte em Nuvem
+    // 2. Buscar candidatos na nuvem (Zero-QR)
     onProgress?.('Consultando Ponte em Nuvem (Zero-QR)...');
     const bridgeId = this.computeBridgeId(key);
-    const data = await this.fetchRendezvous(bridgeId);
+    const cloudCandidates = await this.fetchCandidatesFromCloud(bridgeId);
 
-    if (data) {
-      // 3. Testar a URL remota obtida da nuvem
-      if (data.remote_url) {
-        onProgress?.('Conectando via Túnel Remoto...');
-        const remoteOk = await this.testUrl(data.remote_url, key, 4000);
-        if (remoteOk) {
-          return { url: data.remote_url, source: 'remote' };
-        }
-      }
-
-      // 4. Testar a URL local (caso ambos estejam no mesmo Wi-Fi)
-      if (data.local_url) {
-        onProgress?.('Conectando via Rede Local (Wi-Fi)...');
-        const localOk = await this.testUrl(data.local_url, key, 2000);
-        if (localOk) {
-          return { url: data.local_url, source: 'local' };
-        }
+    // 3. Montar lista consolidada e sem duplicatas
+    const allCandidates: string[] = [];
+    if (fallbackUrl && !allCandidates.includes(fallbackUrl)) {
+      allCandidates.push(fallbackUrl);
+    }
+    for (const c of cloudCandidates) {
+      if (c && !allCandidates.includes(c)) {
+        allCandidates.push(c);
       }
     }
 
-    throw new Error(
-      'Não foi possível conectar ao seu computador pela internet nem pela rede local.\n\nVerifique se o computador está ligado e com o Antigravity Remoto em segundo plano.'
-    );
+    if (allCandidates.length === 0) {
+      throw new Error(
+        'Nenhum endereço registrado encontrado na Nuvem.\n\nVerifique se o Antigravity Remoto está aberto no computador.'
+      );
+    }
+
+    onProgress?.('Testando canais de comunicação com o PC...');
+
+    // 4. Testar todos os candidatos em paralelo — o primeiro que responder ganha
+    const testPromises = allCandidates.map(async (candUrl) => {
+      const ok = await this.testUrl(candUrl, key, 4500);
+      if (ok) {
+        return candUrl;
+      }
+      throw new Error(`Inacessível: ${candUrl}`);
+    });
+
+    try {
+      const winningUrl = await firstSuccessful(testPromises);
+      return {
+        url: winningUrl,
+        source: winningUrl.includes('trycloudflare') ? 'remote' : 'local'
+      };
+    } catch (allErr) {
+      throw new Error(
+        'Não foi possível conectar ao seu computador pela internet nem pela rede local.\n\nVerifique se o computador está ligado e com o Antigravity Remoto em segundo plano.'
+      );
+    }
   },
 };

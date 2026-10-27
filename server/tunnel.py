@@ -26,7 +26,9 @@ class TunnelManager:
         self.bin_dir = Path(__file__).resolve().parent / "bin"
         self.cloudflared_path = self._resolve_cloudflared()
         self.url_file = Path(__file__).resolve().parent / "last_tunnel_url.txt"
+        self.log_file = Path(__file__).resolve().parent / "cloudflared.log"
         self.should_stop = False
+        self.consecutive_health_failures = 0
         self.watchdog_thread: Optional[threading.Thread] = None
 
     def _resolve_cloudflared(self) -> Path:
@@ -36,6 +38,17 @@ class TunnelManager:
             return Path(system_bin)
         local_bin = self.bin_dir / "cloudflared.exe"
         return local_bin
+
+    def kill_existing_cloudflared(self, exclude_pid: Optional[int] = None):
+        """Finaliza processos cloudflared órfãos para evitar conflitos de túnel."""
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                name = proc.info.get('name') or ''
+                pid = proc.info.get('pid')
+                if 'cloudflared' in name.lower() and pid != exclude_pid:
+                    proc.kill()
+            except Exception:
+                pass
 
     def ensure_cloudflared_installed(self, on_progress: Optional[Callable[[str], None]] = None) -> bool:
         """Garante que o executável do cloudflared esteja baixado e disponível."""
@@ -73,14 +86,14 @@ class TunnelManager:
             pass
         return local_ip
 
-    def _is_url_alive(self, url: str) -> bool:
+    def _is_url_alive(self, url: str, timeout: int = 8) -> bool:
         """Verifica se a URL remota responde e está associada a um host ativo."""
         try:
             req = urllib.request.Request(
                 f"{url.rstrip('/')}/api/status",
                 headers={"User-Agent": "AntigravityTunnelCheck/1.0"}
             )
-            with urllib.request.urlopen(req, timeout=4) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
                 return response.status in (200, 401, 403, 404)
         except Exception:
             return False
@@ -108,7 +121,7 @@ class TunnelManager:
             "hostname": socket.gethostname(),
             "timestamp": int(time.time()),
             "status": "online",
-            "version": "1.0.15"
+            "version": "1.0.17"
         }).encode("utf-8")
 
         topic = f"agbridge_{self.bridge_id}"
@@ -126,13 +139,13 @@ class TunnelManager:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status == 200:
                     pass
-        except Exception as e:
-            # Falhas na rede não devem travar o túnel local
+        except Exception:
             pass
 
     def start_tunnel(self, api_key: Optional[str] = None, on_url_ready: Optional[Callable[[str], None]] = None) -> Optional[str]:
         """Inicia o túnel Cloudflare e extrai a URL pública https://*.trycloudflare.com."""
         self.should_stop = False
+        self.consecutive_health_failures = 0
         if api_key:
             self.api_key = api_key
             self.bridge_id = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:24]
@@ -142,7 +155,7 @@ class TunnelManager:
             try:
                 saved = self.url_file.read_text().strip()
                 if saved.startswith("https://") and "trycloudflare.com" in saved:
-                    if self._is_cloudflared_running() and self._is_url_alive(saved):
+                    if self._is_cloudflared_running() and self._is_url_alive(saved, timeout=7):
                         self.public_url = saved
                         print(f"\n[Tunnel] Reutilizando túnel ativo e verificado: {self.public_url}\n")
                         self.publish_rendezvous()
@@ -151,8 +164,8 @@ class TunnelManager:
                             on_url_ready(self.public_url)
                         return self.public_url
                     else:
-                        print(f"[Tunnel] URL salva no arquivo expirou ou processo caiu ({saved}). Iniciando novo túnel...")
-                        self.url_file.unlink(missing_ok=True)
+                        print(f"[Tunnel] Túnel anterior ({saved}) não está ativo. Renovando...")
+                        self.kill_existing_cloudflared()
             except Exception:
                 pass
 
@@ -165,7 +178,18 @@ class TunnelManager:
         return self.public_url
 
     def _spawn_process(self, on_url_ready: Optional[Callable[[str], None]] = None):
-        """Inicia o executável do cloudflared e extrai a URL gerada."""
+        """Inicia o executável do cloudflared com log em arquivo e extrai a URL gerada."""
+        self.should_stop = False
+        self.consecutive_health_failures = 0
+        self.kill_existing_cloudflared()
+
+        # Limpar arquivo de log anterior do túnel
+        try:
+            if self.log_file.exists():
+                self.log_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
         cmd = [
             str(self.cloudflared_path),
             "tunnel",
@@ -173,51 +197,56 @@ class TunnelManager:
             f"http://127.0.0.1:{self.local_port}",
             "--protocol",
             "http2",
-            "--no-autoupdate"
+            "--no-autoupdate",
+            "--logfile",
+            str(self.log_file)
         ]
 
         print(f"[Tunnel] Iniciando novo túnel Cloudflare para porta {self.local_port}...")
         self.process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         )
 
         url_pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
         self.public_url = None
 
-        def monitor_output():
-            try:
-                for line in self.process.stdout:
-                    if self.should_stop:
-                        break
-                    match = url_pattern.search(line)
-                    if match and not self.public_url:
-                        self.public_url = match.group(0)
-                        try:
-                            self.url_file.write_text(self.public_url)
-                        except Exception:
-                            pass
-                        print(f"\n=======================================================")
-                        print(f"🚀 TÚNEL REMOTO ATIVO: {self.public_url}")
-                        print(f"=======================================================\n")
-                        self.publish_rendezvous()
-                        if on_url_ready:
-                            on_url_ready(self.public_url)
-            except Exception:
-                pass
+        def monitor_logfile():
+            start_t = time.time()
+            while not self.should_stop and not self.public_url and (time.time() - start_t < 35):
+                if self.log_file.exists():
+                    try:
+                        content = self.log_file.read_text(encoding="utf-8", errors="ignore")
+                        match = url_pattern.search(content)
+                        if match and not self.public_url:
+                            self.public_url = match.group(0)
+                            try:
+                                self.url_file.write_text(self.public_url, encoding="utf-8")
+                            except Exception:
+                                pass
+                            print(f"\n=======================================================")
+                            print(f"🚀 TÚNEL REMOTO ATIVO: {self.public_url}")
+                            print(f"=======================================================\n")
+                            self.publish_rendezvous()
+                            if on_url_ready:
+                                on_url_ready(self.public_url)
+                            break
+                    except Exception:
+                        pass
+                if self.process and self.process.poll() is not None:
+                    print(f"[Tunnel] cloudflared.exe encerrou com código {self.process.returncode}")
+                    break
+                time.sleep(0.3)
 
-        thread = threading.Thread(target=monitor_output, daemon=True)
+        thread = threading.Thread(target=monitor_logfile, daemon=True)
         thread.start()
 
-        # Aguardar até 20 segundos pela nova URL
-        start_time = time.time()
-        while not self.public_url and time.time() - start_time < 20:
+        # Aguardar até 25 segundos pela extração da URL
+        start_wait = time.time()
+        while not self.public_url and time.time() - start_wait < 25:
             if self.process.poll() is not None:
-                print(f"[Tunnel] Processo cloudflared encerrou prematuramente (código {self.process.returncode}).")
                 break
             time.sleep(0.5)
 
@@ -228,20 +257,28 @@ class TunnelManager:
 
         def watchdog_loop():
             while not self.should_stop:
-                time.sleep(30)
+                time.sleep(20)
                 if self.should_stop:
                     break
 
-                # 1. Verificar se processo está vivo
-                if self.process and self.process.poll() is not None:
-                    print("[Watchdog] Túnel Cloudflare desconectou! Reiniciando ponte...")
+                # 1. Verificar se processo morreu
+                if not self.process or self.process.poll() is not None:
+                    print("[Watchdog] Túnel Cloudflare desconectado! Reiniciando ponte...")
                     self._spawn_process()
-                elif self.public_url and not self._is_url_alive(self.public_url):
-                    print("[Watchdog] URL do túnel não responde. Renovando conexão...")
-                    self.stop_tunnel()
-                    self._spawn_process()
+                elif self.public_url:
+                    # 2. Verificar saúde da URL com tolerância a oscilações momentâneas
+                    alive = self._is_url_alive(self.public_url, timeout=8)
+                    if alive:
+                        self.consecutive_health_failures = 0
+                    else:
+                        self.consecutive_health_failures += 1
+                        if self.consecutive_health_failures >= 4:
+                            print(f"[Watchdog] URL do túnel não responde após 4 tentativas. Renovando conexão...")
+                            self.stop_tunnel()
+                            self.should_stop = False
+                            self._spawn_process()
 
-                # 2. Publicar heartbeat na nuvem
+                # 3. Publicar heartbeat periódico na nuvem para manter o tópico ntfy sempre recente
                 self.publish_rendezvous()
 
         self.watchdog_thread = threading.Thread(target=watchdog_loop, daemon=True)
@@ -302,5 +339,6 @@ class TunnelManager:
                 except Exception:
                     pass
             self.process = None
-            self.public_url = None
-            print("[Tunnel] Túnel Cloudflare encerrado.")
+        self.kill_existing_cloudflared()
+        print("[Tunnel] Túnel Cloudflare encerrado.")
+
