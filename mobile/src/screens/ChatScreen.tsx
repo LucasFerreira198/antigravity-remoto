@@ -242,6 +242,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [submittedQuestions, setSubmittedQuestions] = useState<Record<string, string>>({});
 
   const flatListRef = useRef<FlatList>(null);
+  const isAtBottomRef = useRef<boolean>(true);
   const wsRef = useRef<ConversationWebSocket | null>(null);
   const pollTimerRef = useRef<any>(null);
 
@@ -249,13 +250,19 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   useEffect(() => {
     const onShow = (e: any) => {
       const h = e.endCoordinates ? e.endCoordinates.height : 280;
-      setKeyboardHeight(h);
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 80);
+      if (Platform.OS === 'ios') {
+        setKeyboardHeight(h);
+      }
+      if (isAtBottomRef.current) {
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      }
     };
     const onHide = () => {
-      setKeyboardHeight(0);
+      if (Platform.OS === 'ios') {
+        setKeyboardHeight(0);
+      }
     };
 
     const showSub = Keyboard.addListener(
@@ -316,7 +323,6 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
             if (combined.length !== prev.length) {
               StorageService.saveChatCache(conversation.id, fresh.messages, fresh.artifacts || []);
-              setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
               return combined;
             }
             if (prev.length > 0 && fresh.messages.length > 0) {
@@ -367,7 +373,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           }
         }
       } catch (e) {}
-    }, 1200);
+    }, 2500);
 
     return () => {
       isMounted = false;
@@ -404,10 +410,10 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       } else {
         setServerQueue([]);
       }
-      if (scrollAfter) {
+      if (scrollAfter && isAtBottomRef.current) {
         setTimeout(() => {
           flatListRef.current?.scrollToEnd({ animated: true });
-        }, 150);
+        }, 120);
       }
     } catch (e) {
       console.warn('Erro ao carregar mensagens:', e);
@@ -415,16 +421,28 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   };
 
   const handleLiveEvent = (payload: any) => {
-    // 1. Histórico inicial ou atualização completa
-    if ((payload.event === 'initial_history' || payload.event === 'transcript_updated') && payload.messages) {
+    // 1. Histórico inicial
+    if (payload.event === 'initial_history' && payload.messages) {
       setMessages(payload.messages);
       if (payload.artifacts) setArtifacts(payload.artifacts);
       if (payload.is_active !== undefined) setIsActive(payload.is_active);
       setIsSending(false);
       StorageService.saveChatCache(conversation.id, payload.messages, payload.artifacts || []);
+      isAtBottomRef.current = true;
       setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
+        flatListRef.current?.scrollToEnd({ animated: false });
+      }, 50);
+      return;
+    }
+
+    // Atualização de transcript em tempo real
+    if (payload.event === 'transcript_updated' && payload.messages) {
+      setMessages(payload.messages);
+      if (payload.artifacts) setArtifacts(payload.artifacts);
+      if (payload.is_active !== undefined) setIsActive(payload.is_active);
+      setIsSending(false);
+      StorageService.saveChatCache(conversation.id, payload.messages, payload.artifacts || []);
+      // onContentSizeChange manterá o scroll fixo no final se isAtBottomRef.current for true
       return;
     }
 
@@ -434,7 +452,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       if (raw.event === 'result') {
         setIsSending(false);
         setIsActive(false);
-        loadHistory(true);
+        loadHistory(false);
       }
     }
   };
@@ -503,10 +521,12 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     setMessages((prev) => [...prev, optimisticMsg]);
     setIsActive(true);
     setIsSending(true);
+    isAtBottomRef.current = true;
+    setShowScrollBottom(false);
 
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+    }, 80);
 
     try {
       await api.sendMessage(conversation.id, textToSend, undefined, imagePayload, filePayload);
@@ -694,6 +714,8 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
   const scrollToBottom = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    isAtBottomRef.current = true;
+    setShowScrollBottom(false);
     flatListRef.current?.scrollToEnd({ animated: true });
   };
 
@@ -832,7 +854,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       style={[
         styles.container,
         {
-          paddingBottom: keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 6),
+          paddingBottom: Platform.OS === 'ios' && keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 6),
         },
       ]}
     >
@@ -944,7 +966,8 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         style={{ flex: 1 }}
         data={displayedMessages}
         keyExtractor={(item, index) => `${item.step_index}-${item.type}-${index}`}
-        contentContainerStyle={[styles.messagesList, { paddingBottom: 170 }]}
+        contentContainerStyle={[styles.messagesList, { paddingBottom: 24 }]}
+        removeClippedSubviews={Platform.OS === 'android' ? false : undefined}
         ListHeaderComponent={
           hasMoreMessages ? (
             <TouchableOpacity
@@ -958,19 +981,25 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           ) : null
         }
         onContentSizeChange={() => {
-          if (!showScrollBottom) {
-            flatListRef.current?.scrollToEnd({ animated: true });
+          if (isAtBottomRef.current) {
+            flatListRef.current?.scrollToEnd({ animated: false });
           }
         }}
         onLayout={() => {
-          flatListRef.current?.scrollToEnd({ animated: false });
+          if (isAtBottomRef.current) {
+            flatListRef.current?.scrollToEnd({ animated: false });
+          }
         }}
         onScroll={(e) => {
           const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
-          const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 120;
-          setShowScrollBottom(!isCloseToBottom);
+          const distanceFromBottom = contentSize.height - (layoutMeasurement.height + contentOffset.y);
+          const isClose = distanceFromBottom <= 70;
+          isAtBottomRef.current = isClose;
+
+          const shouldShowBtn = distanceFromBottom > 120;
+          setShowScrollBottom((prev) => (prev !== shouldShowBtn ? shouldShowBtn : prev));
         }}
-        scrollEventThrottle={100}
+        scrollEventThrottle={120}
         renderItem={({ item, index }) => {
           const stepKey = `${item.step_index}_${index}`;
 
@@ -1355,9 +1384,11 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             StorageService.saveDraft(conversation.id, text);
           }}
           onFocus={() => {
-            setTimeout(() => {
-              flatListRef.current?.scrollToEnd({ animated: true });
-            }, 150);
+            if (isAtBottomRef.current) {
+              setTimeout(() => {
+                flatListRef.current?.scrollToEnd({ animated: true });
+              }, 120);
+            }
           }}
           multiline
           maxLength={8000}

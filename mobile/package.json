@@ -1,6 +1,6 @@
 {
   "name": "antigravity-remote",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
