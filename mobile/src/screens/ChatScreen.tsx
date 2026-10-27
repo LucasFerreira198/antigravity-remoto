@@ -158,11 +158,31 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     return tasks.filter((t) => t.status === 'running').length;
   }, [tasks]);
 
-  // Fila combinada sem duplicatas (PC e Celular)
+  // Tarefa ou ferramenta atualmente em execução
+  const currentRunningTask = useMemo(() => {
+    return tasks.find((t) => t.is_active_tool && t.status === 'running') ||
+           tasks.find((t) => t.status === 'running' && !t.is_daemon) ||
+           tasks.find((t) => t.status === 'running');
+  }, [tasks]);
+
+  // Fila combinada sem duplicatas (PC e Celular) com herança de anexos
   const combinedQueue = useMemo(() => {
     const list: QueueItem[] = [...serverQueue];
     for (const l of localQueue) {
-      if (!list.some((item) => item.content.trim() === l.content.trim())) {
+      const idx = list.findIndex((item) => {
+        if (item.id === l.id) return true;
+        const c1 = (item.content || '').trim().toLowerCase();
+        const c2 = (l.content || '').trim().toLowerCase();
+        if (c1 === c2) return true;
+        if (c1.startsWith(c2) || c2.startsWith(c1)) return true;
+        if (l.attachment && item.attachment && l.attachment.name === item.attachment.name) return true;
+        return false;
+      });
+      if (idx !== -1) {
+        if (l.attachment && !list[idx].attachment) {
+          list[idx].attachment = l.attachment;
+        }
+      } else {
         list.push(l);
       }
     }
@@ -254,6 +274,8 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({});
   const [customAnswer, setCustomAnswer] = useState<Record<string, string>>({});
   const [submittedQuestions, setSubmittedQuestions] = useState<Record<string, string>>({});
+  const [persistedAnswers, setPersistedAnswers] = useState<Record<string, string>>({});
+  const [submittingQuestionKey, setSubmittingQuestionKey] = useState<string | null>(null);
 
   const flatListRef = useRef<FlatList>(null);
   const isAtBottomRef = useRef<boolean>(true);
@@ -405,6 +427,26 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   const desktopNoticeTimerRef = useRef<any>(null);
   const chatCacheSaveTimerRef = useRef<any>(null);
 
+  // Notificação visual e sonora de turno concluído instantâneo (0ms)
+  const [completionNotice, setCompletionNotice] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
+  const completionNoticeTimerRef = useRef<any>(null);
+
+  const triggerTurnCompleted = (title?: string, message?: string) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    notificationService.notifyTaskCompleted(title || conversation.title, conversation.id);
+    if (completionNoticeTimerRef.current) clearTimeout(completionNoticeTimerRef.current);
+    setCompletionNotice({
+      title: 'Turno Concluído',
+      message: message || 'O assistente finalizou a resposta com sucesso.',
+    });
+    completionNoticeTimerRef.current = setTimeout(() => {
+      setCompletionNotice(null);
+    }, 4500);
+  };
+
   // 1. Carregamento inicial (Cache instantâneo local + busca em rede + sync contínuo)
   useEffect(() => {
     let isMounted = true;
@@ -414,6 +456,14 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       if (isMounted && cached && cached.messages && cached.messages.length > 0) {
         setMessages(cached.messages);
         if (cached.artifacts) setArtifacts(cached.artifacts);
+      }
+    });
+
+    // Carregar respostas salvas de perguntas interativas do chat
+    StorageService.getAnsweredQuestions(conversation.id).then((saved) => {
+      if (isMounted && saved) {
+        setPersistedAnswers(saved);
+        setSubmittedQuestions((prev) => ({ ...saved, ...prev }));
       }
     });
 
@@ -437,12 +487,12 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           setMessages((prev) => {
             const freshUserContents = fresh.messages
               .filter((m) => m.role === 'user')
-              .map((m) => (m.content || '').trim());
+              .map((m) => (m.content || '').trim().toLowerCase());
             const pendingOptimistic = prev.filter(
               (m) =>
                 m.role === 'user' &&
                 m.type === 'user_message' &&
-                !freshUserContents.includes((m.content || '').trim())
+                !freshUserContents.some((uc) => uc.includes((m.content || '').trim().toLowerCase()))
             );
             const combined = [...fresh.messages, ...pendingOptimistic];
 
@@ -467,11 +517,9 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             return prev;
           });
 
-          // Notificação Android se o assistente finalizou e o app está em background ou outra tela
+          // Notificação Android se o assistente finalizou
           if (prevIsActiveRef.current && fresh.is_active === false) {
-            if (AppState.currentState !== 'active') {
-              notificationService.notifyTaskCompleted(conversation.title, conversation.id);
-            }
+            triggerTurnCompleted(conversation.title, 'Resposta finalizada com sucesso!');
           }
           prevIsActiveRef.current = !!fresh.is_active;
 
@@ -482,14 +530,18 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             setDesktopPendingText(fresh.desktop_pending_text);
           }
           if (fresh.artifacts) setArtifacts(fresh.artifacts);
+          if (fresh.active_tasks) setTasks(fresh.active_tasks);
 
           // 1. Remover da fila local mensagens que já foram adicionadas à conversa
           setLocalQueue((prev) => {
             if (prev.length === 0) return prev;
             const userContents = fresh.messages
               .filter((m) => m.role === 'user')
-              .map((m) => (m.content || '').trim());
-            return prev.filter((item) => !userContents.includes(item.content.trim()));
+              .map((m) => (m.content || '').trim().toLowerCase());
+            return prev.filter((item) => {
+              const itm = item.content.trim().toLowerCase();
+              return !userContents.some((uc) => uc.includes(itm) || itm.includes(uc));
+            });
           });
 
           // 2. Sincronizar fila do PC vinda do servidor
@@ -498,6 +550,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
               id: q.id,
               content: q.content,
               source: 'pc',
+              attachment: q.attachment || undefined,
             }));
             setServerQueue(pcItems);
           } else {
@@ -505,7 +558,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           }
         }
       } catch (e) {}
-    }, 2500);
+    }, 1200);
 
     return () => {
       isMounted = false;
@@ -538,9 +591,13 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           id: q.id,
           content: q.content,
           source: 'pc',
+          attachment: q.attachment || undefined,
         })));
       } else {
         setServerQueue([]);
+      }
+      if (data.active_tasks) {
+        setTasks(data.active_tasks);
       }
       if (scrollAfter && isAtBottomRef.current) {
         setTimeout(() => {
@@ -579,7 +636,15 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       return;
     }
 
-    // 1. Histórico inicial
+    // 1. Notificação instantânea de turno concluído (0ms)
+    if (payload.event === 'task_completed') {
+      setIsActive(false);
+      setIsSending(false);
+      triggerTurnCompleted(payload.title, payload.preview);
+      return;
+    }
+
+    // 2. Histórico inicial
     if (payload.event === 'initial_history' && payload.messages) {
       setMessages(payload.messages);
       if (payload.artifacts) setArtifacts(payload.artifacts);
@@ -593,12 +658,46 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       return;
     }
 
-    // Atualização de transcript em tempo real
+    // 3. Atualização de transcript em tempo real
     if (payload.event === 'transcript_updated' && payload.messages) {
       setMessages(payload.messages);
       if (payload.artifacts) setArtifacts(payload.artifacts);
-      if (payload.is_active !== undefined) setIsActive(payload.is_active);
+      if (payload.is_active !== undefined) {
+        if (prevIsActiveRef.current && payload.is_active === false) {
+          triggerTurnCompleted(conversation.title, 'Resposta finalizada com sucesso!');
+        }
+        prevIsActiveRef.current = !!payload.is_active;
+        setIsActive(payload.is_active);
+      }
+      if (payload.desktop_pending_text !== undefined) {
+        setDesktopPendingText(payload.desktop_pending_text);
+      }
+      if (payload.active_tasks) {
+        setTasks(payload.active_tasks);
+      }
+      if (payload.queued_messages) {
+        const pcItems: QueueItem[] = payload.queued_messages.map((q: any) => ({
+          id: q.id,
+          content: q.content,
+          source: 'pc',
+          attachment: q.attachment || undefined,
+        }));
+        setServerQueue(pcItems);
+      }
       setIsSending(false);
+
+      // Limpar da fila local mensagens que já foram processadas
+      setLocalQueue((prev) => {
+        if (prev.length === 0) return prev;
+        const userContents = payload.messages
+          .filter((m: any) => m.role === 'user')
+          .map((m: any) => (m.content || '').trim().toLowerCase());
+        return prev.filter((item) => {
+          const itm = item.content.trim().toLowerCase();
+          return !userContents.some((uc: string) => uc.includes(itm) || itm.includes(uc));
+        });
+      });
+
       // Debounce da gravação em disco para manter a UI e o stream a 60 FPS
       if (chatCacheSaveTimerRef.current) clearTimeout(chatCacheSaveTimerRef.current);
       chatCacheSaveTimerRef.current = setTimeout(() => {
@@ -607,7 +706,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       return;
     }
 
-    // 2. Stream incremental se houver
+    // 4. Stream incremental se houver
     if (payload.event === 'stream_step' && payload.raw) {
       const raw = payload.raw;
       if (raw.event === 'result') {
@@ -664,8 +763,8 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // Se o assistente já estiver trabalhando (e NÃO for resposta a uma pergunta interativa)
-    if (isActive && !isQuestionAnswer) {
+    // Se o assistente já estiver trabalhando ou enviando (e NÃO for resposta a uma pergunta interativa)
+    if ((isActive || isSending) && !isQuestionAnswer) {
       const qId = Date.now().toString();
       const currentAttachment = rawAttachment ? {
         name: rawAttachment.name,
@@ -1031,6 +1130,28 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           </View>
         ) : null}
 
+        {/* Saída da Ferramenta / Terminal */}
+        {tc.output ? (
+          <View style={[styles.diffTerminalCard, { marginTop: 6, borderColor: '#334155' }]}>
+            <View style={[styles.diffTerminalHeader, { backgroundColor: '#0f172a' }]}>
+              <Terminal size={12} color="#34d399" style={{ marginRight: 6 }} />
+              <Text style={[styles.diffTerminalTitle, { color: '#34d399' }]}>Saída do comando</Text>
+              <TouchableOpacity
+                style={styles.diffCopyBtn}
+                onPress={() => copyToClipboard(tc.output || '', -15)}
+              >
+                <Copy size={11} color="#34d399" />
+                <Text style={[styles.diffCopyText, { color: '#34d399' }]}>Copiar</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.diffCodeScroll}>
+              <Text style={[styles.diffTerminalCodeText, { color: '#cbd5e1' }]} selectable>
+                {tc.output}
+              </Text>
+            </ScrollView>
+          </View>
+        ) : null}
+
         {/* Detalhe genérico caso não seja código/comando */}
         {!isEdit && !isWrite && !isRun && tc.detail ? (
           <View style={styles.toolDetailBox}>
@@ -1082,29 +1203,88 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     }
     if (!Array.isArray(questions) || questions.length === 0) return null;
 
+    // Verificar autoritativamente se a pergunta já foi respondida
+    const isServerAnswered = Boolean(toolCall.answered);
+    const serverAnswer = (toolCall.answer || '').trim();
+    const localAnswer = (submittedQuestions[stepKey] || persistedAnswers[stepKey] || '').trim();
+    const rawOutputAnswer = (toolCall.output ? toolCall.output.trim() : '');
+    const displayAnswer = serverAnswer || localAnswer || rawOutputAnswer;
+    const isAnswered = isServerAnswered || Boolean(localAnswer) || Boolean(displayAnswer);
+
     return (
-      <View style={styles.questionCard}>
+      <View style={[styles.questionCard, isAnswered && styles.questionCardAnswered]}>
         <View style={styles.questionHeader}>
-          <HelpCircle size={16} color="#f59e0b" style={{ marginRight: 6 }} />
-          <Text style={styles.questionTitle}>Pergunta do Antigravity</Text>
+          {isAnswered ? (
+            <CheckCircle2 size={16} color="#10b981" style={{ marginRight: 6 }} />
+          ) : (
+            <HelpCircle size={16} color="#f59e0b" style={{ marginRight: 6 }} />
+          )}
+          <Text style={[styles.questionTitle, isAnswered && styles.questionTitleAnswered]}>
+            Pergunta do Antigravity
+          </Text>
+          {isAnswered && (
+            <View style={styles.questionStatusBadge}>
+              <Check size={11} color="#10b981" style={{ marginRight: 3 }} />
+              <Text style={styles.questionStatusText}>Respondida</Text>
+            </View>
+          )}
         </View>
 
         {questions.map((q: QuestionItem, qIdx: number) => {
-          const selected = questionAnswers[`${stepKey}_${qIdx}`] || '';
+          const qKey = `${stepKey}_${qIdx}`;
+          const currentSelected = questionAnswers[qKey] || '';
           const optionsList = Array.isArray(q.options) ? q.options : [];
+          const itemAnswer = (submittedQuestions[qKey] || persistedAnswers[qKey] || displayAnswer).trim();
+
           return (
             <View key={qIdx} style={styles.questionBody}>
               <Text style={styles.questionPrompt}>{q.question}</Text>
+              
               <View style={styles.optionsWrap}>
                 {optionsList.map((opt: string, optIdx: number) => {
-                  const isSelected = selected === opt;
+                  const isSelected = currentSelected === opt;
+                  const isThisOptionChosen = isAnswered && Boolean(
+                    itemAnswer && (
+                      opt.trim().toLowerCase() === itemAnswer.toLowerCase() ||
+                      itemAnswer.toLowerCase().includes(opt.trim().toLowerCase()) ||
+                      opt.trim().toLowerCase().includes(itemAnswer.toLowerCase()) ||
+                      currentSelected === opt
+                    )
+                  );
+
+                  if (isAnswered) {
+                    return (
+                      <View
+                        key={optIdx}
+                        style={[
+                          styles.optionBtn,
+                          isThisOptionChosen ? styles.optionBtnAnsweredSelected : styles.optionBtnDisabled,
+                        ]}
+                      >
+                        {isThisOptionChosen ? (
+                          <CheckCircle2 size={14} color="#10b981" style={{ marginRight: 8 }} />
+                        ) : (
+                          <Circle size={14} color="#52525b" style={{ marginRight: 8 }} />
+                        )}
+                        <Text
+                          style={[
+                            styles.optionText,
+                            isThisOptionChosen ? styles.optionTextAnsweredSelected : styles.optionTextDisabled,
+                          ]}
+                        >
+                          {opt}
+                        </Text>
+                      </View>
+                    );
+                  }
+
                   return (
                     <TouchableOpacity
                       key={optIdx}
                       style={[styles.optionBtn, isSelected && styles.optionBtnSelected]}
                       onPress={() => {
                         Haptics.selectionAsync();
-                        setQuestionAnswers((prev) => ({ ...prev, [`${stepKey}_${qIdx}`]: opt }));
+                        setQuestionAnswers((prev) => ({ ...prev, [qKey]: opt }));
                       }}
                       activeOpacity={0.7}
                     >
@@ -1121,45 +1301,94 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                 })}
               </View>
 
-              {/* Opção de resposta digitada */}
-              <TextInput
-                style={styles.customAnswerInput}
-                placeholder="Ou digite outra resposta..."
-                placeholderTextColor="#64748b"
-                value={customAnswer[`${stepKey}_${qIdx}`] || ''}
-                onChangeText={(text) => {
-                  setCustomAnswer((prev) => ({ ...prev, [`${stepKey}_${qIdx}`]: text }));
-                  if (text) {
-                    setQuestionAnswers((prev) => ({ ...prev, [`${stepKey}_${qIdx}`]: text }));
-                  }
-                }}
-              />
+              {/* Opção de resposta digitada ou confirmada */}
+              {isAnswered ? (
+                displayAnswer && !optionsList.some((o) => o.trim().toLowerCase() === displayAnswer.toLowerCase() || displayAnswer.toLowerCase().includes(o.trim().toLowerCase())) ? (
+                  <View style={styles.customAnswerConfirmedBox}>
+                    <Text style={styles.customAnswerConfirmedLabel}>Resposta enviada:</Text>
+                    <Text style={styles.customAnswerConfirmedText}>{displayAnswer}</Text>
+                  </View>
+                ) : null
+              ) : (
+                <TextInput
+                  style={styles.customAnswerInput}
+                  placeholder="Ou digite outra resposta..."
+                  placeholderTextColor="#64748b"
+                  value={customAnswer[qKey] || ''}
+                  onChangeText={(text) => {
+                    setCustomAnswer((prev) => ({ ...prev, [qKey]: text }));
+                    if (text) {
+                      setQuestionAnswers((prev) => ({ ...prev, [qKey]: text }));
+                    }
+                  }}
+                />
+              )}
 
-              {/* Botão de Enviar Resposta */}
-              {submittedQuestions[stepKey] ? (
+              {/* Botão de Enviar ou Banner de Confirmação */}
+              {isAnswered ? (
                 <View style={styles.questionAnsweredBanner}>
-                  <Check size={14} color="#10b981" style={{ marginRight: 6 }} />
-                  <Text style={styles.questionAnsweredText}>
-                    Resposta confirmada: {submittedQuestions[stepKey]}
-                  </Text>
+                  <CheckCircle2 size={16} color="#10b981" style={{ marginRight: 8 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.questionAnsweredTitle}>Resposta confirmada e enviada</Text>
+                    <Text style={styles.questionAnsweredText}>
+                      {displayAnswer || 'Esta pergunta já foi respondida e recebida pelo Antigravity.'}
+                    </Text>
+                  </View>
                 </View>
               ) : (
                 <TouchableOpacity
                   style={[
                     styles.submitAnswerBtn,
-                    !selected && !customAnswer[`${stepKey}_${qIdx}`] && styles.submitAnswerBtnDisabled,
+                    (!currentSelected && !customAnswer[qKey]) && styles.submitAnswerBtnDisabled,
+                    submittingQuestionKey === stepKey && { opacity: 0.7 },
                   ]}
-                  disabled={!selected && !customAnswer[`${stepKey}_${qIdx}`]}
-                  onPress={() => {
-                    const finalChoice = customAnswer[`${stepKey}_${qIdx}`] || selected;
-                    if (finalChoice) {
-                      setSubmittedQuestions((prev) => ({ ...prev, [stepKey]: finalChoice }));
-                      handleSend(finalChoice, true);
+                  disabled={(!currentSelected && !customAnswer[qKey]) || submittingQuestionKey === stepKey}
+                  onPress={async () => {
+                    const finalChoice = (customAnswer[qKey] || currentSelected || '').trim();
+                    if (!finalChoice) return;
+
+                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                    setSubmittingQuestionKey(stepKey);
+
+                    // Registrar imediatamente no estado e no AsyncStorage para nunca sumir
+                    setSubmittedQuestions((prev) => ({
+                      ...prev,
+                      [stepKey]: finalChoice,
+                      [qKey]: finalChoice,
+                    }));
+                    setPersistedAnswers((prev) => ({
+                      ...prev,
+                      [stepKey]: finalChoice,
+                      [qKey]: finalChoice,
+                    }));
+                    StorageService.saveAnsweredQuestion(conversation.id, stepKey, finalChoice);
+                    StorageService.saveAnsweredQuestion(conversation.id, qKey, finalChoice);
+
+                    // Feedback visual proeminente imediato
+                    setDesktopStatusNotice({
+                      text: `✓ Resposta confirmada: "${finalChoice.length > 50 ? finalChoice.slice(0, 47) + '...' : finalChoice}"`,
+                      type: 'success',
+                    });
+                    setTimeout(() => setDesktopStatusNotice(null), 5000);
+
+                    try {
+                      await handleSend(finalChoice, true);
+                    } finally {
+                      setSubmittingQuestionKey(null);
                     }
                   }}
                 >
-                  <Check size={14} color="#ffffff" style={{ marginRight: 6 }} />
-                  <Text style={styles.submitAnswerBtnText}>Confirmar e Enviar Resposta</Text>
+                  {submittingQuestionKey === stepKey ? (
+                    <>
+                      <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 8 }} />
+                      <Text style={styles.submitAnswerBtnText}>Enviando resposta...</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Check size={14} color="#ffffff" style={{ marginRight: 6 }} />
+                      <Text style={styles.submitAnswerBtnText}>Confirmar e Enviar Resposta</Text>
+                    </>
+                  )}
                 </TouchableOpacity>
               )}
             </View>
@@ -1389,7 +1618,8 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
             // Se for pergunta interativa
             if (tc.name === 'ask_question') {
-              return renderInteractiveQuestion(tc, stepKey);
+              const questionStepKey = `q_step_${item.step_index}`;
+              return renderInteractiveQuestion(tc, questionStepKey);
             }
 
             return (
@@ -1536,84 +1766,91 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           </View>
           {combinedQueue.map((item, qIdx) => (
             <View key={item.id || qIdx} style={styles.queuedItemRow}>
-              <View style={styles.queuedContentWrap}>
-                <View
-                  style={[
-                    styles.sourceBadge,
-                    item.source === 'pc' ? styles.sourceBadgePc : styles.sourceBadgeMobile,
-                  ]}
-                >
-                  <Text style={styles.sourceBadgeText}>
-                    {item.source === 'pc' ? 'PC' : 'Celular'}
-                  </Text>
-                </View>
-                {item.attachment && (
-                  <View style={styles.queuedAttachmentPill}>
-                    {item.attachment.isImage ? (
-                      <ImageIcon size={10} color="#38bdf8" style={{ marginRight: 4 }} />
-                    ) : (
-                      <FileText size={10} color="#a855f7" style={{ marginRight: 4 }} />
-                    )}
-                    <Text style={styles.queuedAttachmentText} numberOfLines={1}>
-                      {item.attachment.name}
+              {/* Linha superior: Origem, Anexo e Botões */}
+              <View style={styles.queuedTopRow}>
+                <View style={styles.queuedBadgesRow}>
+                  <View
+                    style={[
+                      styles.sourceBadge,
+                      item.source === 'pc' ? styles.sourceBadgePc : styles.sourceBadgeMobile,
+                    ]}
+                  >
+                    <Text style={styles.sourceBadgeText}>
+                      {item.source === 'pc' ? 'PC' : 'Celular'}
                     </Text>
                   </View>
-                )}
+                  {item.attachment && (
+                    <View style={styles.queuedAttachmentPill}>
+                      {item.attachment.isImage ? (
+                        <ImageIcon size={11} color="#38bdf8" style={{ marginRight: 4 }} />
+                      ) : (
+                        <FileText size={11} color="#a855f7" style={{ marginRight: 4 }} />
+                      )}
+                      <Text style={styles.queuedAttachmentText} numberOfLines={1}>
+                        {item.attachment.name}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <View style={styles.queuedActionRow}>
+                  <TouchableOpacity
+                    style={[styles.queuedSendBtn, isActive && styles.queuedSendBtnActiveWaiting]}
+                    onPress={() => {
+                      handleSend(
+                        item.content,
+                        false,
+                        item.attachment ? {
+                          name: item.attachment.name,
+                          isImage: item.attachment.isImage,
+                          uri: item.attachment.uri || '',
+                          base64: item.attachment.base64
+                        } : undefined
+                      );
+                      setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                      setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
+                    }}
+                  >
+                    <Send size={10} color="#ffffff" style={{ marginRight: 3 }} />
+                    <Text style={styles.queuedSendBtnText}>
+                      {isActive ? 'Forçar' : 'Enviar'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.queuedEditBtn}
+                    onPress={() => {
+                      setInputPrompt(item.content);
+                      if (item.attachment) {
+                        setSelectedAttachment({
+                          name: item.attachment.name,
+                          isImage: item.attachment.isImage,
+                          uri: item.attachment.uri || '',
+                          base64: item.attachment.base64
+                        });
+                      }
+                      setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                      setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
+                    }}
+                  >
+                    <Text style={styles.queuedEditText}>Editar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.queuedRemoveBtn}
+                    onPress={() => {
+                      setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                      setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
+                    }}
+                  >
+                    <X size={13} color="#94a3b8" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Linha inferior: Texto completo da instrução */}
+              {item.content ? (
                 <Text style={styles.queuedText} numberOfLines={2}>
                   {item.content}
                 </Text>
-              </View>
-              <View style={styles.queuedActionRow}>
-                <TouchableOpacity
-                  style={[styles.queuedSendBtn, isActive && styles.queuedSendBtnActiveWaiting]}
-                  onPress={() => {
-                    handleSend(
-                      item.content,
-                      false,
-                      item.attachment ? {
-                        name: item.attachment.name,
-                        isImage: item.attachment.isImage,
-                        uri: item.attachment.uri || '',
-                        base64: item.attachment.base64
-                      } : undefined
-                    );
-                    setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
-                    setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
-                  }}
-                >
-                  <Send size={11} color="#ffffff" style={{ marginRight: 4 }} />
-                  <Text style={styles.queuedSendBtnText}>
-                    {isActive ? 'Forçar Envio' : 'Enviar Agora'}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.queuedEditBtn}
-                  onPress={() => {
-                    setInputPrompt(item.content);
-                    if (item.attachment) {
-                      setSelectedAttachment({
-                        name: item.attachment.name,
-                        isImage: item.attachment.isImage,
-                        uri: item.attachment.uri || '',
-                        base64: item.attachment.base64
-                      });
-                    }
-                    setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
-                    setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
-                  }}
-                >
-                  <Text style={styles.queuedEditText}>Editar</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.queuedRemoveBtn}
-                  onPress={() => {
-                    setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
-                    setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
-                  }}
-                >
-                  <X size={13} color="#94a3b8" />
-                </TouchableOpacity>
-              </View>
+              ) : null}
             </View>
           ))}
         </View>
@@ -1729,6 +1966,52 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           >
             {desktopStatusNotice.text}
           </Text>
+        </View>
+      )}
+
+      {/* Banner de Tarefa Ativa em Execução Ao Vivo */}
+      {isActive && (
+        <View style={styles.activeTaskBanner}>
+          <ActivityIndicator size="small" color="#38bdf8" style={{ marginRight: 8 }} />
+          <View style={{ flex: 1 }}>
+            <View style={styles.activeTaskHeaderRow}>
+              <Text style={styles.activeTaskTitle} numberOfLines={1}>
+                {currentRunningTask ? (currentRunningTask.tool_name || 'Ferramenta') : 'Executando'}
+              </Text>
+              <View style={styles.activeTaskLiveBadge}>
+                <Text style={styles.activeTaskLiveBadgeText}>Ao vivo</Text>
+              </View>
+            </View>
+            <Text style={styles.activeTaskSummary} numberOfLines={1}>
+              {currentRunningTask ? currentRunningTask.name : 'Assistente analisando e gerando resposta...'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={styles.activeTaskLogsBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowTasksModal(true);
+            }}
+          >
+            <Terminal size={12} color="#38bdf8" style={{ marginRight: 4 }} />
+            <Text style={styles.activeTaskLogsBtnText}>Ver Logs</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Notificação Instantânea de Turno Concluído */}
+      {completionNotice && (
+        <View style={styles.completionBanner}>
+          <CheckCircle2 size={16} color="#34d399" style={{ marginRight: 8 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.completionBannerTitle}>{completionNotice.title}</Text>
+            <Text style={styles.completionBannerMessage} numberOfLines={1}>
+              {completionNotice.message}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => setCompletionNotice(null)} style={{ padding: 4 }}>
+            <X size={14} color="#94a3b8" />
+          </TouchableOpacity>
         </View>
       )}
 
@@ -2389,6 +2672,10 @@ const styles = StyleSheet.create({
     padding: 14,
     marginVertical: 8,
   },
+  questionCardAnswered: {
+    backgroundColor: '#121d17',
+    borderColor: 'rgba(16, 185, 129, 0.45)',
+  },
   questionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2397,6 +2684,23 @@ const styles = StyleSheet.create({
   questionTitle: {
     color: '#f59e0b',
     fontSize: 14,
+    fontWeight: '700',
+  },
+  questionTitleAnswered: {
+    color: '#10b981',
+  },
+  questionStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    marginLeft: 'auto',
+  },
+  questionStatusText: {
+    color: '#10b981',
+    fontSize: 11,
     fontWeight: '700',
   },
   questionBody: {
@@ -2425,6 +2729,13 @@ const styles = StyleSheet.create({
     borderColor: '#38bdf8',
     backgroundColor: '#082f49',
   },
+  optionBtnAnsweredSelected: {
+    borderColor: '#10b981',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+  },
+  optionBtnDisabled: {
+    opacity: 0.38,
+  },
   optionText: {
     color: '#e4e4e7',
     fontSize: 13,
@@ -2433,6 +2744,13 @@ const styles = StyleSheet.create({
   optionTextSelected: {
     color: '#38bdf8',
     fontWeight: '600',
+  },
+  optionTextAnsweredSelected: {
+    color: '#10b981',
+    fontWeight: '700',
+  },
+  optionTextDisabled: {
+    color: '#71717a',
   },
   customAnswerInput: {
     backgroundColor: '#27272a',
@@ -2444,6 +2762,25 @@ const styles = StyleSheet.create({
     color: '#fafafa',
     fontSize: 13,
     marginTop: 10,
+  },
+  customAnswerConfirmedBox: {
+    backgroundColor: '#18261e',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: 10,
+  },
+  customAnswerConfirmedLabel: {
+    color: '#10b981',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  customAnswerConfirmedText: {
+    color: '#f0fdf4',
+    fontSize: 13,
   },
   submitAnswerBtn: {
     flexDirection: 'row',
@@ -2467,16 +2804,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'rgba(16, 185, 129, 0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderColor: 'rgba(16, 185, 129, 0.35)',
     borderRadius: 8,
     paddingVertical: 9,
     paddingHorizontal: 12,
     marginTop: 10,
   },
-  questionAnsweredText: {
+  questionAnsweredTitle: {
     color: '#10b981',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  questionAnsweredText: {
+    color: '#a7f3d0',
+    fontSize: 12,
+    fontWeight: '500',
   },
   imagePreviewWrap: {
     flexDirection: 'row',
@@ -2593,24 +2936,28 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   queuedItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 5,
+    paddingVertical: 7,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.05)',
   },
-  queuedContentWrap: {
-    flex: 1,
+  queuedTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginRight: 8,
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  queuedBadgesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 6,
+    flexWrap: 'wrap',
+    gap: 4,
   },
   sourceBadge: {
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: 4,
-    marginRight: 6,
   },
   sourceBadgePc: {
     backgroundColor: 'rgba(56, 189, 248, 0.15)',
@@ -2627,11 +2974,25 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#f8fafc',
   },
+  queuedAttachmentPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    maxWidth: 160,
+  },
+  queuedAttachmentText: {
+    color: '#cbd5e1',
+    fontSize: 10,
+    fontWeight: '500',
+  },
   queuedText: {
     color: '#cbd5e1',
     fontSize: 12,
     lineHeight: 16,
-    flex: 1,
+    marginTop: 2,
   },
   queuedActionRow: {
     flexDirection: 'row',
@@ -2654,23 +3015,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
-  queuedAttachmentPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1e293b',
-    borderRadius: 4,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    marginTop: 2,
-    marginBottom: 2,
-    alignSelf: 'flex-start',
-    maxWidth: 200,
-  },
-  queuedAttachmentText: {
-    color: '#cbd5e1',
-    fontSize: 10,
-    fontWeight: '500',
-  },
   queuedEditBtn: {
     backgroundColor: '#27272a',
     borderRadius: 4,
@@ -2684,6 +3028,82 @@ const styles = StyleSheet.create({
   },
   queuedRemoveBtn: {
     padding: 3,
+  },
+  activeTaskBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginHorizontal: 14,
+    marginBottom: 6,
+  },
+  activeTaskHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  activeTaskTitle: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+    marginRight: 6,
+  },
+  activeTaskLiveBadge: {
+    backgroundColor: 'rgba(56, 189, 248, 0.2)',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  activeTaskLiveBadgeText: {
+    color: '#38bdf8',
+    fontSize: 9,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  activeTaskSummary: {
+    color: '#e2e8f0',
+    fontSize: 11,
+  },
+  activeTaskLogsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginLeft: 8,
+  },
+  activeTaskLogsBtnText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  completionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginHorizontal: 14,
+    marginBottom: 6,
+  },
+  completionBannerTitle: {
+    color: '#10b981',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  completionBannerMessage: {
+    color: '#a7f3d0',
+    fontSize: 11,
   },
   desktopStatusBanner: {
     flexDirection: 'row',

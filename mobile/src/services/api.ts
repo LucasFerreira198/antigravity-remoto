@@ -175,7 +175,15 @@ class ApiService {
     artifacts: Artifact[];
     is_active?: boolean;
     desktop_pending_text?: string;
-    queued_messages?: Array<{ id: string; content: string; sender: string; timestamp: string; source?: string }>;
+    queued_messages?: Array<{
+      id: string;
+      content: string;
+      sender: string;
+      timestamp: string;
+      source?: string;
+      attachment?: { name: string; isImage: boolean; uri: string; base64?: string };
+    }>;
+    active_tasks?: BackgroundTask[];
   }> {
     return this.request(`/api/conversations/${encodeURIComponent(id)}`);
   }

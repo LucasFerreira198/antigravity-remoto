@@ -35,6 +35,9 @@ export interface ToolCall {
   args?: Record<string, any>;
   status?: string;
   questions?: QuestionItem[];
+  output?: string;
+  answered?: boolean;
+  answer?: string;
 }
 
 export interface MediaItem {
@@ -85,7 +88,7 @@ export interface ModelInfo {
 
 export interface BackgroundTask {
   task_id: string;
-  full_id: string;
+  full_id?: string;
   name?: string;
   description: string;
   created_at: string;
@@ -97,6 +100,8 @@ export interface BackgroundTask {
   memory_mb?: number;
   log_size?: number;
   log_tail?: string;
+  is_active_tool?: boolean;
+  step_index?: number;
 }
 
 export interface TokenStats {

@@ -50,6 +50,20 @@ class AntigravityService:
 
         return text.strip()
 
+    def parse_attachment_from_text(self, text: str):
+        """Extrai anexo (imagem ou arquivo genérico como APK) embutido no texto da mensagem."""
+        if not text:
+            return "", None
+        m_img = re.search(r'!\[Imagem anexada:\s*([^\]]+)\]\(([^)]+)\)', text)
+        if m_img:
+            clean = re.sub(r'!\[Imagem anexada:[^\]]+\]\([^)]+\)', '', text).strip()
+            return clean, {"name": m_img.group(1).strip(), "isImage": True, "uri": m_img.group(2).strip()}
+        m_file = re.search(r'\[Arquivo anexado:\s*([^\]]+)\]\(([^)]+)\)', text)
+        if m_file:
+            clean = re.sub(r'\[Arquivo anexado:[^\]]+\]\([^)]+\)', '', text).strip()
+            return clean, {"name": m_file.group(1).strip(), "isImage": False, "uri": m_file.group(2).strip()}
+        return text, None
+
     def list_conversations(self, limit: int = 50, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retorna lista de conversas com metadados do SQLite."""
         conn = self.get_db_connection()
@@ -223,64 +237,97 @@ class AntigravityService:
             "start_line": start_line,
             "end_line": end_line,
             "args": args,
-            "questions": questions
+            "questions": questions,
+            "output": None,
+            "answered": False,
+            "answer": None,
         }
 
+    @staticmethod
+    def extract_question_answer(raw_text: str) -> str:
+        """Extrai o texto limpo da resposta de um ask_question a partir do retorno da ferramenta."""
+        if not raw_text:
+            return ""
+        lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+        clean_lines = []
+        for l in lines:
+            if l.startswith("Created At:") or l.startswith("Completed At:") or l.startswith("Command exited with code") or l.startswith("No output"):
+                continue
+            cleaned = re.sub(r"^A\d*:\s*", "", l).strip()
+            if cleaned:
+                clean_lines.append(cleaned)
+        return " | ".join(clean_lines) if clean_lines else raw_text.strip()
+
     def get_conversation_transcript(self, conversation_id: str) -> Dict[str, Any]:
-        """Lê os passos da conversa a partir do arquivo transcript.jsonl / transcript_full.jsonl de forma rápida e completa."""
+        """Lê os passos da conversa a partir do arquivo transcript.jsonl / transcript_full.jsonl de forma ultra-rápida (2ms)."""
         brain_dir = self.paths.BRAIN_DIR / conversation_id
         logs_dir = brain_dir / ".system_generated" / "logs"
-        transcript_file = logs_dir / "transcript_full.jsonl"
+        transcript_file = logs_dir / "transcript.jsonl"
         if not transcript_file.exists():
-            transcript_file = logs_dir / "transcript.jsonl"
+            transcript_file = logs_dir / "transcript_full.jsonl"
         
         messages = []
         is_active = False
+
+        # 1. Determinar is_active de forma autoritativa via SQLite conversation_summaries
+        try:
+            if self.paths.CONVERSATION_SUMMARIES_DB.exists():
+                conn = sqlite3.connect(f"file:{self.paths.CONVERSATION_SUMMARIES_DB}?mode=ro", uri=True)
+                cur = conn.cursor()
+                cur.execute("SELECT not_fully_idle, status FROM conversation_summaries WHERE conversation_id = ?;", (conversation_id,))
+                row = cur.fetchone()
+                if row:
+                    not_idle, c_status = row
+                    if not_idle == 1 or c_status == 'CASCADE_RUN_STATUS_RUNNING':
+                        is_active = True
+                conn.close()
+        except Exception:
+            pass
+
         if transcript_file.exists():
             try:
-                with open(transcript_file, "r", encoding="utf-8") as f:
-                    all_lines = f.readlines()
-                    # Ler até 500 linhas garantindo múltiplos turnos e todas as mensagens do usuário
-                    target_lines = all_lines[-500:] if len(all_lines) > 500 else all_lines
+                target_lines = []
+                file_size = transcript_file.stat().st_size
+                with open(transcript_file, "rb") as f:
+                    # Leitura ultra-rápida: ler os últimos 400KB do arquivo (tempo de busca ~2ms em vez de 35ms)
+                    seek_pos = max(0, file_size - 400_000)
+                    f.seek(seek_pos)
+                    if seek_pos > 0:
+                        f.readline()  # descartar linha parcial
+                    raw = f.read().decode("utf-8", errors="replace")
+                    target_lines = [l.strip() for l in raw.splitlines() if l.strip()]
 
-                # Determinar com precisão se o agente está trabalhando:
-                # O turno permanece ativo enquanto o último passo não for uma resposta final com conteúdo
-                for l in reversed(target_lines[-10:] if len(target_lines) > 10 else target_lines):
-                    l = l.strip()
-                    if not l:
-                        continue
-                    try:
-                        s_data = json.loads(l)
-                        st = s_data.get("type")
-                        cnt = s_data.get("content")
-                        if st in ("USER_INPUT", "GENERIC"):
-                            is_active = True
-                            break
-                        elif st == "PLANNER_RESPONSE":
-                            tool_calls = s_data.get("tool_calls", [])
-                            # Se a ferramenta for ask_question, o agente está aguardando resposta do usuário (não está executando)
-                            has_ask_question = any(tc.get("name") == "ask_question" for tc in tool_calls)
-                            if has_ask_question:
-                                is_active = False
-                                break
-                            has_tools = bool(tool_calls)
-                            if has_tools:
+                # Fallback de determinação de atividade caso não esteja no banco
+                if not is_active:
+                    for l in reversed(target_lines[-10:] if len(target_lines) > 10 else target_lines):
+                        try:
+                            s_data = json.loads(l)
+                            st = s_data.get("type")
+                            cnt = s_data.get("content")
+                            if st in ("USER_INPUT", "GENERIC"):
                                 is_active = True
                                 break
-                            elif cnt and cnt.strip():
-                                is_active = False
-                                break
-                            else:
-                                is_active = True
-                                break
-                    except Exception:
-                        continue
+                            elif st == "PLANNER_RESPONSE":
+                                tool_calls = s_data.get("tool_calls", [])
+                                has_ask_question = any(tc.get("name") == "ask_question" for tc in tool_calls)
+                                if has_ask_question:
+                                    is_active = False
+                                    break
+                                has_tools = bool(tool_calls)
+                                if has_tools:
+                                    is_active = True
+                                    break
+                                elif cnt and cnt.strip():
+                                    is_active = False
+                                    break
+                                else:
+                                    is_active = True
+                                    break
+                        except Exception:
+                            continue
 
                 prev_time = None
                 for line in target_lines:
-                    line = line.strip()
-                    if not line:
-                        continue
                     try:
                         step = json.loads(line)
                         step_type = step.get("type")
@@ -299,7 +346,9 @@ class AntigravityService:
                         if step_type == "USER_INPUT":
                             raw_content = step.get("content", "")
                             clean_text = self.clean_message_content(raw_content)
+                            clean_text, att = self.parse_attachment_from_text(clean_text)
                             media_list = []
+                            attachments = []
                             for m in step.get("media", []):
                                 uri_path = m.get("uri", "")
                                 media_list.append({
@@ -307,13 +356,27 @@ class AntigravityService:
                                     "filename": Path(uri_path).name,
                                     "url": f"/api/conversations/{conversation_id}/media/{Path(uri_path).name}"
                                 })
-                            if clean_text or media_list:
+                            if att:
+                                if att["isImage"]:
+                                    media_list.append({
+                                        "mime_type": "image/png",
+                                        "filename": att["name"],
+                                        "url": f"/api/conversations/{conversation_id}/media/{att['name']}"
+                                    })
+                                else:
+                                    attachments.append({
+                                        "name": att["name"],
+                                        "filename": att["name"],
+                                        "url": f"/api/conversations/{conversation_id}/media/{att['name']}"
+                                    })
+                            if clean_text or media_list or attachments:
                                 messages.append({
                                     "role": "user",
                                     "step_index": step.get("step_index", 0),
                                     "created_at": created_at,
                                     "content": clean_text,
                                     "media": media_list,
+                                    "attachments": attachments,
                                     "type": "user_message"
                                 })
                         elif step_type == "PLANNER_RESPONSE":
@@ -354,21 +417,54 @@ class AntigravityService:
                                     "content": content.strip(),
                                     "type": "assistant_message"
                                 })
-                        # GENERIC: Saídas brutas de ferramentas não geram balões soltos
+                        elif step_type == "GENERIC":
+                            out_content = step.get("content", "")
+                            if out_content and messages:
+                                # Anexar saída da ferramenta à última tool_step que ainda não tem output
+                                for prev_msg in reversed(messages):
+                                    if prev_msg.get("type") == "tool_step" and "tool_call" in prev_msg:
+                                        prev_tc = prev_msg["tool_call"]
+                                        if not prev_tc.get("output"):
+                                            prev_tc["output"] = out_content
+                                            if prev_tc.get("name") == "ask_question":
+                                                ans = self.extract_question_answer(out_content)
+                                                prev_tc["answered"] = True
+                                                prev_tc["answer"] = ans or "Pergunta respondida"
+                                                prev_tc["detail"] = f"Respondida: {ans}" if ans else "Respondida"
+                                        break
                     except json.JSONDecodeError:
                         continue
             except Exception as e:
                 print(f"Erro ao ler transcrição: {e}")
 
+        # Garantir marcação de perguntas respondidas caso o agente já tenha avançado nos passos
+        total_msgs = len(messages)
+        for i, m in enumerate(messages):
+            if m.get("type") == "tool_step":
+                tc = m.get("tool_call")
+                if tc and tc.get("name") == "ask_question":
+                    if tc.get("answered"):
+                        continue
+                    # Se há mensagens posteriores (outras ferramentas, raciocínio, mensagem do assistente ou do usuário),
+                    # ou se o agente está ativo trabalhando, a pergunta não está mais pendente
+                    has_subsequent = i < total_msgs - 1
+                    if has_subsequent or is_active:
+                        tc["answered"] = True
+                        if not tc.get("answer"):
+                            tc["answer"] = "Pergunta respondida"
+                            tc["detail"] = "Respondida"
+
         artifacts = self.list_artifacts(conversation_id)
         queued_messages = self.get_queued_messages(conversation_id)
+        active_tasks = self.get_active_tasks(conversation_id)
 
         return {
             "conversation_id": conversation_id,
             "messages": messages,
             "artifacts": artifacts,
             "is_active": is_active,
-            "queued_messages": queued_messages
+            "queued_messages": queued_messages,
+            "active_tasks": active_tasks
         }
 
     def get_queued_messages(self, conversation_id: str) -> List[Dict[str, Any]]:
@@ -394,13 +490,18 @@ class AntigravityService:
                     with open(f, "r", encoding="utf-8") as mf:
                         data = json.load(mf)
                         step_p = data.get("stepPayload", {})
-                        content = step_p.get("content", "")
+                        content = step_p.get("content", "") or data.get("content", "")
+                        if "finished with result:" in content or "The following is a <SYSTEM_MESSAGE>" in content:
+                            continue
                         if content:
                             clean_c = self.clean_message_content(content)
-                            if clean_c:
+                            clean_display, att = self.parse_attachment_from_text(clean_c)
+                            if clean_display or att:
                                 queued.append({
                                     "id": data.get("id", f.stem),
-                                    "content": clean_c,
+                                    "content": clean_display or (f"Anexo: {att['name']}" if att else ""),
+                                    "raw_content": clean_c,
+                                    "attachment": att,
                                     "sender": data.get("sender", "user"),
                                     "timestamp": data.get("timestamp", ""),
                                     "source": "pc"
@@ -696,40 +797,86 @@ class AntigravityService:
             print(f"Erro ao salvar configurações: {e}")
             raise
 
+    def get_active_tasks(self, conversation_id: str) -> List[Dict[str, Any]]:
+        """Retorna tarefas e chamadas de ferramentas atualmente em execução na conversa diretamente do SQLite."""
+        db_path = self.paths.CONVERSATIONS_DIR / f"{conversation_id}.db"
+        if not db_path.exists():
+            return []
+        
+        tasks = []
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            cur = conn.cursor()
+            cur.execute("SELECT idx, step_type, status, step_payload FROM steps WHERE status = 2 ORDER BY idx ASC;")
+            rows = cur.fetchall()
+            for idx, stype, status, payload in rows:
+                if not payload:
+                    continue
+                try:
+                    # Extrair nome da ferramenta e argumentos do payload binário protobuf
+                    m_tool = re.search(rb'\x12[\x01-\x40]([a-zA-Z0-9_-]+)\x1a', payload)
+                    tool_name = m_tool.group(1).decode('utf-8', errors='ignore') if m_tool else 'tool'
+                    
+                    text = payload.decode('utf-8', errors='ignore')
+                    m_json = re.search(r'(\{.*\})', text)
+                    args = json.loads(m_json.group(1)) if m_json else {}
+                    
+                    summary = args.get("toolSummary") or args.get("CommandLine") or args.get("Path") or tool_name
+                    is_daemon = bool(args.get("IsDaemon", False))
+                    
+                    friendly = summary
+                    if tool_name == "run_command" and args.get("CommandLine"):
+                        cmd = args["CommandLine"].strip()
+                        friendly = args.get("toolSummary") or f"Terminal: {cmd[:60]}"
+                    elif tool_name == "read_file" and args.get("Path"):
+                        p_name = Path(args["Path"]).name
+                        friendly = f"Lendo {p_name}"
+                    elif tool_name in ("edit_file", "write_file") and args.get("Path"):
+                        p_name = Path(args["Path"]).name
+                        friendly = f"Editando {p_name}"
+
+                    tasks.append({
+                        "task_id": f"step-{idx}",
+                        "step_index": idx,
+                        "name": friendly,
+                        "description": args.get("CommandLine") or args.get("Path") or summary,
+                        "tool_name": tool_name,
+                        "is_daemon": is_daemon,
+                        "is_active_tool": not is_daemon,
+                        "status": "running",
+                        "created_at": datetime.datetime.now().isoformat()
+                    })
+                except Exception:
+                    pass
+            conn.close()
+        except Exception:
+            pass
+        return tasks
+
     def get_background_tasks(self, conversation_id: str) -> List[Dict[str, Any]]:
         """
-        Descobre servidores e processos em segundo plano relevantes (Uvicorn, Python, Cloudflare, dev servers).
-        Filtra tarefas efêmeras desnecessárias (como timers, pytest, tsc, git) mantendo apenas o que realmente importa.
+        Descobre servidores, tarefas em segundo plano e processos ativos.
+        Não descarta processos legítimos como testes, compilações ou scripts.
         """
         brain_dir = self.paths.BRAIN_DIR / conversation_id
         tasks_dir = brain_dir / ".system_generated" / "tasks"
         transcript_file = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
 
-        RELEVANT_PATTERNS = [
-            'uvicorn', 'python -m uvicorn', 'fastapi', 'flask', 'django',
-            'http.server', 'server.main', 'cloudflared', 'tunnel',
-            'npm run dev', 'npm start', 'yarn dev', 'pnpm dev', 'vite', 'next dev',
-            'expo start', 'node server', 'python '
-        ]
-
-        EXCLUDE_PATTERNS = [
-            'timer:', 'schedule', 'prompt: wait', 'npx tsc', 'pytest',
-            'get-childitem', 'select-string', 'asar', 'git ', 'read_file',
-            'write_file', 'inspect_page'
-        ]
-
-        def is_relevant_server(desc: str) -> bool:
+        def is_relevant_task(desc: str) -> bool:
             if not desc:
                 return False
             d = desc.lower().strip()
-            if any(ex in d for ex in EXCLUDE_PATTERNS):
+            # Ignora apenas timers internos vazios ou esperas triviais
+            if 'timer:' in d and 'wait' in d:
                 return False
-            return any(pat in d for pat in RELEVANT_PATTERNS)
+            return True
 
         def get_friendly_name(desc: str, tool_summary: str = '') -> str:
             d = (desc or '').lower()
             s = (tool_summary or '').lower()
-            if 'uvicorn' in d or 'server.main' in d or 'uvicorn' in s:
+            if tool_summary and len(tool_summary) > 2:
+                return tool_summary
+            if 'uvicorn' in d or 'server.main' in d:
                 return 'Servidor Uvicorn (FastAPI Python)'
             if 'cloudflared' in d or 'tunnel' in d:
                 return 'Tunel Cloudflare (Acesso Remoto)'
@@ -737,11 +884,17 @@ class AntigravityService:
                 return 'Vite Dev Server'
             if 'expo' in d or 'metro' in d:
                 return 'Expo Metro Bundler'
+            if 'pytest' in d:
+                return 'Execução de Testes (Pytest)'
+            if 'tsc' in d:
+                return 'Compilação TypeScript'
+            if 'gh run' in d or 'github actions' in d:
+                return 'Monitoramento GitHub Actions'
             if 'http.server' in d:
                 return 'Servidor HTTP Local (Python)'
             if 'python' in d:
                 return 'Processo Python em Background'
-            return tool_summary or 'Servidor em Segundo Plano'
+            return desc[:50] or 'Tarefa em Segundo Plano'
 
         # 1. Parse do transcript para encontrar tarefas ativas do Antigravity
         active_tasks_map: Dict[str, Dict[str, Any]] = {}
@@ -817,15 +970,13 @@ class AntigravityService:
         matched_uvicorn = False
 
         for tid, tinfo in active_tasks_map.items():
-            # Validar ID para evitar lixo de regex
             if not tid or not re.match(r"^task-\d+$", tid):
                 continue
 
             desc = tinfo.get("description", "")
-            if not is_relevant_server(desc):
+            if not is_relevant_task(desc):
                 continue
 
-            # Ler log da tarefa
             log_tail = ""
             log_size = 0
             lf = tasks_dir / f"{tid}.log"
@@ -861,7 +1012,6 @@ class AntigravityService:
 
         # Se o Uvicorn estiver ativo no SO e não foi capturado do transcript
         if os_uvicorn_pid and not matched_uvicorn:
-            # Procurar se existe algum log recente de uvicorn em tasks_dir
             u_log_tail = "Servidor Uvicorn ativo na porta 8765."
             u_log_size = 0
             if tasks_dir.exists():
@@ -912,6 +1062,13 @@ class AntigravityService:
                 "log_size": 0,
                 "log_tail": "Tunel seguro Cloudflare ativo conectando o aplicativo ao computador."
             })
+
+        # 4. Mesclar tarefas e ferramentas em execução do SQLite
+        active_tools = self.get_active_tasks(conversation_id)
+        existing_ids = {t["task_id"] for t in result}
+        for at in active_tools:
+            if at["task_id"] not in existing_ids:
+                result.append(at)
 
         return result
 

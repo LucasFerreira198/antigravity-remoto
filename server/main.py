@@ -407,6 +407,7 @@ def update_settings(req: UpdateSettingsRequest):
     return service.update_settings(req.settings)
 
 @app.get("/api/artifacts/{conversation_id}/{filename}", dependencies=[Depends(verify_token)])
+@app.get("/api/conversations/{conversation_id}/artifacts/{filename}", dependencies=[Depends(verify_token)])
 def get_artifact(conversation_id: str, filename: str):
     data = service.get_artifact_content(conversation_id, filename)
     if not data:
@@ -534,12 +535,15 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
     except Exception as e:
         print(f"Erro ao enviar histórico inicial: {e}")
 
-    # 2. Monitorar transcript_full.jsonl, transcript.jsonl e SQLite WAL em tempo real ultra-rápido (150ms)
+    # 2. Monitorar transcript.jsonl, SQLite WAL, summaries e fila de mensagens em tempo real ultra-rápido (120ms)
     brain_dir = service.paths.BRAIN_DIR / conversation_id / ".system_generated" / "logs"
     file_full = brain_dir / "transcript_full.jsonl"
     file_std = brain_dir / "transcript.jsonl"
     wal_file = service.paths.CONVERSATIONS_DIR / f"{conversation_id}.db-wal"
     db_file = service.paths.CONVERSATIONS_DIR / f"{conversation_id}.db"
+    summaries_db = service.paths.CONVERSATION_SUMMARIES_DB
+    summaries_wal = service.paths.ANTIGRAVITY_DIR / "conversation_summaries.db-wal"
+    messages_dir = service.paths.BRAIN_DIR / conversation_id / ".system_generated" / "messages"
 
     def get_stats():
         s1 = file_full.stat().st_size if file_full.exists() else 0
@@ -550,27 +554,77 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
         m3 = wal_file.stat().st_mtime if wal_file.exists() else 0
         s4 = db_file.stat().st_size if db_file.exists() else 0
         m4 = db_file.stat().st_mtime if db_file.exists() else 0
-        return (s1, m1, s2, m2, s3, m3, s4, m4)
+        s5 = summaries_db.stat().st_size if summaries_db.exists() else 0
+        m5 = summaries_db.stat().st_mtime if summaries_db.exists() else 0
+        s6 = summaries_wal.stat().st_size if summaries_wal.exists() else 0
+        m6 = summaries_wal.stat().st_mtime if summaries_wal.exists() else 0
+        q_count = len(list(messages_dir.glob("*.json"))) if messages_dir.exists() else 0
+        return (s1, m1, s2, m2, s3, m3, s4, m4, s5, m5, s6, m6, q_count)
 
     last_stats = get_stats()
+    last_is_active = transcript_data.get("is_active", False)
     stop_event = asyncio.Event()
 
     async def watch_transcript_loop():
-        nonlocal last_stats
+        nonlocal last_stats, last_is_active
         while not stop_event.is_set():
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.12)
             try:
                 curr_stats = get_stats()
                 if curr_stats != last_stats:
-                    last_stats = curr_stats
                     fresh_data = service.get_conversation_transcript(conversation_id)
+                    curr_is_active = bool(fresh_data.get("is_active", False))
+                    active_tasks = service.get_active_tasks(conversation_id)
+
+                    # Verificar se há texto pendente digitado no desktop PC
+                    desktop_pending = ""
+                    try:
+                        if await cdp_controller.is_desktop_available():
+                            desktop_pending = await cdp_controller.get_desktop_pending_text(conversation_id) or ""
+                    except Exception:
+                        pass
+
+                    # 1. Notificação imediata (0ms) se o agente concluiu o turno
+                    if last_is_active is True and not curr_is_active:
+                        last_preview = ""
+                        for m in reversed(fresh_data.get("messages", [])):
+                            if m.get("role") == "assistant" and m.get("content"):
+                                last_preview = m["content"][:140]
+                                break
+                        convo_title = ""
+                        try:
+                            convos = service.list_conversations(limit=15)
+                            for c in convos:
+                                if c["id"] == conversation_id:
+                                    convo_title = c.get("title", "")
+                                    break
+                        except Exception:
+                            pass
+
+                        await websocket.send_text(json.dumps({
+                            "event": "task_completed",
+                            "conversation_id": conversation_id,
+                            "title": convo_title or "Antigravity",
+                            "preview": last_preview or "Resposta concluída pelo assistente."
+                        }))
+
+                    last_is_active = curr_is_active
+
+                    # 2. Transmissão do estado fresco para o cliente WebSocket
                     await websocket.send_text(json.dumps({
                         "event": "transcript_updated",
                         "messages": fresh_data["messages"],
                         "artifacts": fresh_data["artifacts"],
-                        "is_active": fresh_data.get("is_active", False)
+                        "is_active": curr_is_active,
+                        "queued_messages": fresh_data.get("queued_messages", []),
+                        "desktop_pending_text": desktop_pending,
+                        "active_tasks": active_tasks
                     }))
+
+                    # Atualiza last_stats SOMENTE após envio bem-sucedido
+                    last_stats = curr_stats
             except Exception:
+                # Se falhar temporariamente por lock do SQLite no Windows, o próximo loop (120ms) tentará novamente
                 pass
 
     watcher_task = asyncio.create_task(watch_transcript_loop())

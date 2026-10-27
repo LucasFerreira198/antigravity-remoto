@@ -117,7 +117,7 @@ export default function App() {
           activeConversationsRef.current[c.id] = !!c.is_active;
         }
       } catch (e) {}
-    }, 4000);
+    }, 1200);
 
     return () => clearInterval(monitorInterval);
   }, [isConnected, currentScreen, selectedConversation?.id]);

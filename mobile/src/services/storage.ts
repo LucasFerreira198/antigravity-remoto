@@ -100,5 +100,23 @@ export const StorageService = {
       const key = `@antigravity_remote:draft:${conversationId}`;
       await AsyncStorage.removeItem(key);
     } catch (e) {}
+  },
+
+  async getAnsweredQuestions(conversationId: string): Promise<Record<string, string>> {
+    try {
+      const key = `@antigravity_remote:answered_questions:${conversationId}`;
+      const data = await AsyncStorage.getItem(key);
+      if (data) return JSON.parse(data);
+    } catch (e) {}
+    return {};
+  },
+
+  async saveAnsweredQuestion(conversationId: string, questionKey: string, answer: string): Promise<void> {
+    try {
+      const key = `@antigravity_remote:answered_questions:${conversationId}`;
+      const current = await this.getAnsweredQuestions(conversationId);
+      current[questionKey] = answer;
+      await AsyncStorage.setItem(key, JSON.stringify(current));
+    } catch (e) {}
   }
 };

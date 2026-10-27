@@ -14,7 +14,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { X, FileText, Copy, Check, ArrowLeft, Image as ImageIcon, Play, CheckCircle } from 'lucide-react-native';
+import { X, FileText, Copy, Check, ArrowLeft, Image as ImageIcon, Play, CheckCircle, Code, Eye, AlertTriangle, RefreshCw } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Markdown from 'react-native-markdown-display';
 import { colors, isTabletDevice } from '../theme/colors';
@@ -42,6 +42,8 @@ export default function ArtifactViewerModal({
   const [artifacts, setArtifacts] = useState<Artifact[]>(initialArtifacts || []);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [contentData, setContentData] = useState<any>(null);
+  const [contentError, setContentError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'markdown' | 'raw'>('markdown');
   const [isLoadingList, setIsLoadingList] = useState(!initialArtifacts || initialArtifacts.length === 0);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -65,6 +67,7 @@ export default function ArtifactViewerModal({
       if (selectedArtifact) {
         setSelectedArtifact(null);
         setContentData(null);
+        setContentError(null);
         return true;
       }
       onClose();
@@ -106,13 +109,20 @@ export default function ArtifactViewerModal({
 
   const handleSelectArtifact = async (art: Artifact) => {
     setSelectedArtifact(art);
+    setContentData(null);
+    setContentError(null);
+    setViewMode('markdown');
     setIsLoadingContent(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       const data = await api.getArtifact(conversationId, art.name);
+      if (!data) {
+        throw new Error('Artefato não retornado pelo servidor.');
+      }
       setContentData(data);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Erro ao obter conteúdo do artefato:', e);
+      setContentError(e?.message || 'Falha de conexão ao carregar o relatório.');
     } finally {
       setIsLoadingContent(false);
     }
@@ -156,6 +166,25 @@ export default function ArtifactViewerModal({
                 {selectedArtifact ? selectedArtifact.name : 'Artefatos da Conversa'}
               </Text>
             </View>
+            {selectedArtifact && !contentData?.is_binary && (
+              <TouchableOpacity
+                style={[styles.modeToggleBtn, viewMode === 'raw' && styles.modeToggleBtnActive]}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setViewMode((prev) => (prev === 'markdown' ? 'raw' : 'markdown'));
+                }}
+                activeOpacity={0.7}
+              >
+                {viewMode === 'markdown' ? (
+                  <Code size={15} color="#38bdf8" />
+                ) : (
+                  <Eye size={15} color="#10b981" />
+                )}
+                <Text style={[styles.modeToggleText, viewMode === 'raw' && styles.modeToggleTextActive]}>
+                  {viewMode === 'markdown' ? 'Raw' : 'MD'}
+                </Text>
+              </TouchableOpacity>
+            )}
             {selectedArtifact && !contentData?.is_binary ? (
               <TouchableOpacity style={styles.actionBtn} onPress={copyContent}>
                 {copied ? <Check size={18} color="#34d399" /> : <Copy size={18} color="#94a3b8" />}
@@ -179,8 +208,22 @@ export default function ArtifactViewerModal({
                   <ActivityIndicator size="large" color="#38bdf8" />
                   <Text style={styles.loadingText}>Abrindo arquivo...</Text>
                 </View>
+              ) : contentError ? (
+                <View style={styles.centerLoading}>
+                  <AlertTriangle size={36} color="#f43f5e" style={{ marginBottom: 12 }} />
+                  <Text style={styles.errorTitle}>Erro ao carregar documento</Text>
+                  <Text style={styles.errorDesc}>{contentError}</Text>
+                  <TouchableOpacity
+                    style={styles.retryBtn}
+                    onPress={() => handleSelectArtifact(selectedArtifact)}
+                    activeOpacity={0.8}
+                  >
+                    <RefreshCw size={14} color="#ffffff" style={{ marginRight: 6 }} />
+                    <Text style={styles.retryBtnText}>Tentar Novamente</Text>
+                  </TouchableOpacity>
+                </View>
               ) : contentData?.is_binary ? (
-                <ScrollView contentContainerStyle={styles.imageScroll}>
+                <ScrollView style={styles.scrollFlex} contentContainerStyle={styles.imageScroll}>
                   <Image
                     source={{ uri: `data:image/png;base64,${contentData.base64_data}` }}
                     style={styles.artifactImage}
@@ -188,13 +231,19 @@ export default function ArtifactViewerModal({
                   />
                 </ScrollView>
               ) : (
-                <ScrollView contentContainerStyle={styles.textScroll}>
-                  {selectedArtifact?.is_markdown ? (
+                <ScrollView
+                  style={styles.scrollFlex}
+                  contentContainerStyle={styles.textScroll}
+                  showsVerticalScrollIndicator={true}
+                >
+                  {viewMode === 'markdown' && selectedArtifact?.is_markdown ? (
                     <Markdown style={markdownStyles}>
                       {contentData?.content || ''}
                     </Markdown>
                   ) : (
-                    <Text style={styles.artifactText}>{contentData?.content}</Text>
+                    <Text style={styles.artifactText} selectable>
+                      {contentData?.content || ''}
+                    </Text>
                   )}
                 </ScrollView>
               )}
@@ -435,9 +484,62 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 12,
   },
+  scrollFlex: {
+    flex: 1,
+  },
   textScroll: {
     padding: 12,
     paddingBottom: 40,
+  },
+  modeToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.25)',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginRight: 4,
+  },
+  modeToggleBtnActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  modeToggleText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 4,
+  },
+  modeToggleTextActive: {
+    color: '#10b981',
+  },
+  errorTitle: {
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  errorDesc: {
+    color: '#94a3b8',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 16,
+    paddingHorizontal: 20,
+  },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  retryBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '600',
   },
   artifactText: {
     color: '#f8fafc',
@@ -457,24 +559,40 @@ const styles = StyleSheet.create({
 });
 
 const markdownStyles = StyleSheet.create({
-  body: {
-    color: '#e2e8f0',
+  // Obrigatório no Android: define a cor padrão de todos os nós de texto
+  text: {
+    color: '#f8fafc',
     fontSize: 14,
     lineHeight: 22,
+  },
+  body: {
+    color: '#f8fafc',
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  paragraph: {
+    color: '#f8fafc',
+    fontSize: 14,
+    lineHeight: 22,
+    marginTop: 0,
+    marginBottom: 10,
+  },
+  textgroup: {
+    color: '#f8fafc',
   },
   heading1: {
     color: '#38bdf8',
     fontSize: 20,
     fontWeight: '700',
     marginTop: 14,
-    marginBottom: 6,
+    marginBottom: 8,
   },
   heading2: {
     color: '#60a5fa',
     fontSize: 17,
     fontWeight: '700',
     marginTop: 12,
-    marginBottom: 4,
+    marginBottom: 6,
   },
   heading3: {
     color: '#93c5fd',
@@ -483,13 +601,64 @@ const markdownStyles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 4,
   },
-  paragraph: {
-    marginTop: 0,
-    marginBottom: 8,
+  heading4: {
+    color: '#bfdbfe',
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  hr: {
+    backgroundColor: '#334155',
+    height: 1,
+    marginVertical: 12,
+  },
+  strong: {
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  em: {
+    fontStyle: 'italic',
+    color: '#e2e8f0',
+  },
+  s: {
+    textDecorationLine: 'line-through',
+    color: '#94a3b8',
   },
   link: {
     color: '#38bdf8',
     textDecorationLine: 'underline',
+  },
+  bullet_list: {
+    marginVertical: 6,
+  },
+  ordered_list: {
+    marginVertical: 6,
+  },
+  list_item: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginVertical: 3,
+  },
+  bullet_list_icon: {
+    marginLeft: 4,
+    marginRight: 8,
+    color: '#38bdf8',
+    fontSize: 14,
+  },
+  bullet_list_content: {
+    flex: 1,
+    color: '#f8fafc',
+  },
+  ordered_list_icon: {
+    marginLeft: 4,
+    marginRight: 8,
+    color: '#38bdf8',
+    fontSize: 13,
+  },
+  ordered_list_content: {
+    flex: 1,
+    color: '#f8fafc',
   },
   code_inline: {
     backgroundColor: '#1e293b',
@@ -501,25 +670,25 @@ const markdownStyles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   code_block: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#0a0f1d',
     borderColor: '#1e293b',
     borderWidth: 1,
     borderRadius: 8,
     padding: 12,
     marginVertical: 8,
     color: '#f8fafc',
-    fontSize: 13,
+    fontSize: 12.5,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   fence: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#0a0f1d',
     borderColor: '#1e293b',
     borderWidth: 1,
     borderRadius: 8,
     padding: 12,
     marginVertical: 8,
     color: '#f8fafc',
-    fontSize: 13,
+    fontSize: 12.5,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   blockquote: {
@@ -527,15 +696,9 @@ const markdownStyles = StyleSheet.create({
     borderLeftColor: '#38bdf8',
     borderLeftWidth: 3,
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginVertical: 6,
+    paddingVertical: 8,
+    marginVertical: 8,
     borderRadius: 4,
-  },
-  bullet_list: {
-    marginVertical: 4,
-  },
-  ordered_list: {
-    marginVertical: 4,
   },
   table: {
     borderColor: '#334155',
@@ -548,17 +711,20 @@ const markdownStyles = StyleSheet.create({
     padding: 8,
     borderColor: '#334155',
     borderWidth: 0.5,
-    color: '#f8fafc',
+    color: '#ffffff',
     fontWeight: '700',
+    fontSize: 13,
   },
   td: {
     padding: 8,
     borderColor: '#334155',
     borderWidth: 0.5,
-    color: '#e2e8f0',
+    color: '#f8fafc',
+    fontSize: 13,
   },
-  strong: {
-    fontWeight: '700',
-    color: '#ffffff',
+  tr: {
+    borderBottomWidth: 1,
+    borderColor: '#334155',
+    flexDirection: 'row',
   },
 });
