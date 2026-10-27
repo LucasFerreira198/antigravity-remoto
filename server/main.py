@@ -534,17 +534,23 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
     except Exception as e:
         print(f"Erro ao enviar histórico inicial: {e}")
 
-    # 2. Monitorar transcript_full.jsonl e transcript.jsonl em tempo real
+    # 2. Monitorar transcript_full.jsonl, transcript.jsonl e SQLite WAL em tempo real ultra-rápido (150ms)
     brain_dir = service.paths.BRAIN_DIR / conversation_id / ".system_generated" / "logs"
     file_full = brain_dir / "transcript_full.jsonl"
     file_std = brain_dir / "transcript.jsonl"
+    wal_file = service.paths.CONVERSATIONS_DIR / f"{conversation_id}.db-wal"
+    db_file = service.paths.CONVERSATIONS_DIR / f"{conversation_id}.db"
 
     def get_stats():
         s1 = file_full.stat().st_size if file_full.exists() else 0
         m1 = file_full.stat().st_mtime if file_full.exists() else 0
         s2 = file_std.stat().st_size if file_std.exists() else 0
         m2 = file_std.stat().st_mtime if file_std.exists() else 0
-        return (s1, m1, s2, m2)
+        s3 = wal_file.stat().st_size if wal_file.exists() else 0
+        m3 = wal_file.stat().st_mtime if wal_file.exists() else 0
+        s4 = db_file.stat().st_size if db_file.exists() else 0
+        m4 = db_file.stat().st_mtime if db_file.exists() else 0
+        return (s1, m1, s2, m2, s3, m3, s4, m4)
 
     last_stats = get_stats()
     stop_event = asyncio.Event()
@@ -552,7 +558,7 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
     async def watch_transcript_loop():
         nonlocal last_stats
         while not stop_event.is_set():
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.15)
             try:
                 curr_stats = get_stats()
                 if curr_stats != last_stats:

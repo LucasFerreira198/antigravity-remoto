@@ -403,6 +403,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     type: 'info' | 'success' | 'warning';
   } | null>(null);
   const desktopNoticeTimerRef = useRef<any>(null);
+  const chatCacheSaveTimerRef = useRef<any>(null);
 
   // 1. Carregamento inicial (Cache instantâneo local + busca em rede + sync contínuo)
   useEffect(() => {
@@ -427,7 +428,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     ws.connect();
     wsRef.current = ws;
 
-    // Sincronização contínua a cada 2.5s (garante que mensagens do PC apareçam na hora)
+    // Sincronização contínua a cada 1.2s (garante que mensagens e logs do PC apareçam na hora)
     const autoSyncTimer = setInterval(async () => {
       if (!isMounted) return;
       try {
@@ -446,13 +447,20 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
             const combined = [...fresh.messages, ...pendingOptimistic];
 
             if (combined.length !== prev.length) {
-              StorageService.saveChatCache(conversation.id, fresh.messages, fresh.artifacts || []);
               return combined;
             }
             if (prev.length > 0 && fresh.messages.length > 0) {
               const lastP = prev[prev.length - 1];
               const lastF = fresh.messages[fresh.messages.length - 1];
-              if (lastP.content !== lastF.content || lastP.step_index !== lastF.step_index || lastP.type !== lastF.type) {
+              // Detectar alterações em conteúdo, pensamento (thinking), tool_calls ou tipo
+              const hasChanged =
+                lastP.content !== lastF.content ||
+                lastP.thinking !== lastF.thinking ||
+                lastP.step_index !== lastF.step_index ||
+                lastP.type !== lastF.type ||
+                (lastP.tool_calls?.length || 0) !== (lastF.tool_calls?.length || 0);
+
+              if (hasChanged) {
                 return combined;
               }
             }
@@ -591,8 +599,11 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       if (payload.artifacts) setArtifacts(payload.artifacts);
       if (payload.is_active !== undefined) setIsActive(payload.is_active);
       setIsSending(false);
-      StorageService.saveChatCache(conversation.id, payload.messages, payload.artifacts || []);
-      // onContentSizeChange manterá o scroll fixo no final se isAtBottomRef.current for true
+      // Debounce da gravação em disco para manter a UI e o stream a 60 FPS
+      if (chatCacheSaveTimerRef.current) clearTimeout(chatCacheSaveTimerRef.current);
+      chatCacheSaveTimerRef.current = setTimeout(() => {
+        StorageService.saveChatCache(conversation.id, payload.messages, payload.artifacts || []);
+      }, 2500);
       return;
     }
 
