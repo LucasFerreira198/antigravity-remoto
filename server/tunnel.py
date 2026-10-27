@@ -114,14 +114,23 @@ class TunnelManager:
         if not self.bridge_id or not self.public_url:
             return
 
+        now = time.time()
+        # Previne spam e bloqueio HTTP 429: só publica se a URL mudou ou após 10 minutos
+        if getattr(self, "_last_published_url", None) == self.public_url:
+            if now - getattr(self, "_last_published_time", 0) < 600:
+                return
+
+        self._last_published_url = self.public_url
+        self._last_published_time = now
+
         payload = json.dumps({
             "bridge_id": self.bridge_id,
             "remote_url": self.public_url,
             "local_url": f"http://{self.get_local_ip()}:{self.local_port}",
             "hostname": socket.gethostname(),
-            "timestamp": int(time.time()),
+            "timestamp": int(now),
             "status": "online",
-            "version": "1.0.17"
+            "version": "1.0.22"
         }).encode("utf-8")
 
         topic = f"agbridge_{self.bridge_id}"
