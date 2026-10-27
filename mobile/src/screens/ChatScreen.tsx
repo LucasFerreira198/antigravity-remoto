@@ -54,6 +54,8 @@ import {
   Archive,
   Target,
   Bot,
+  Minus,
+  Plus,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
@@ -712,6 +714,145 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     setTimeout(() => setCopiedIndex(null), 2000);
   };
 
+  // Renderiza detalhes completos de código (Diff, Conteúdo Criado, Comandos) igual ao Desktop
+  const renderToolCallDetail = (tc: ToolCall) => {
+    const path = tc.path || tc.args?.Path;
+    const target = tc.target !== undefined ? tc.target : tc.args?.Target;
+    const replacement = tc.replacement !== undefined ? tc.replacement : tc.args?.Replacement;
+    const content = tc.content !== undefined ? tc.content : tc.args?.Content;
+    const command = tc.command || tc.args?.CommandLine;
+    const isEdit = tc.name === 'edit_file' || !!(target !== undefined || replacement !== undefined);
+    const isWrite = tc.name === 'write_file' || (content !== undefined && !isEdit);
+    const isRun = tc.name === 'run_command' || !!command;
+
+    return (
+      <View style={styles.toolDetailContainer}>
+        {/* Cabeçalho do Caminho / Arquivo */}
+        {path ? (
+          <View style={styles.toolPathHeader}>
+            <FileCode size={13} color="#38bdf8" style={{ marginRight: 6 }} />
+            <Text style={styles.toolPathText} numberOfLines={1}>
+              {path}
+            </Text>
+            <TouchableOpacity
+              style={styles.toolCopyBtn}
+              onPress={() => copyToClipboard(path, -10)}
+              activeOpacity={0.7}
+            >
+              <Copy size={12} color="#94a3b8" />
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {/* Diff: Edição de Arquivo (Original vs Substituído) */}
+        {isEdit && (
+          <View style={styles.diffWrapper}>
+            {target ? (
+              <View style={styles.diffTargetCard}>
+                <View style={styles.diffTargetHeader}>
+                  <View style={styles.diffTargetBadge}>
+                    <Minus size={11} color="#ef4444" style={{ marginRight: 4 }} />
+                    <Text style={styles.diffTargetBadgeText}>Original substituído</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.diffCopyBtn}
+                    onPress={() => copyToClipboard(target, -11)}
+                  >
+                    <Copy size={11} color="#f87171" />
+                    <Text style={styles.diffCopyText}>Copiar</Text>
+                  </TouchableOpacity>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.diffCodeScroll}>
+                  <Text style={styles.diffTargetCodeText} selectable>
+                    {target}
+                  </Text>
+                </ScrollView>
+              </View>
+            ) : null}
+
+            {replacement ? (
+              <View style={styles.diffReplacementCard}>
+                <View style={styles.diffReplacementHeader}>
+                  <View style={styles.diffReplacementBadge}>
+                    <Plus size={11} color="#34d399" style={{ marginRight: 4 }} />
+                    <Text style={styles.diffReplacementBadgeText}>Novo código inserido</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.diffCopyBtn}
+                    onPress={() => copyToClipboard(replacement, -12)}
+                  >
+                    <Copy size={11} color="#4ade80" />
+                    <Text style={[styles.diffCopyText, { color: '#4ade80' }]}>Copiar</Text>
+                  </TouchableOpacity>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.diffCodeScroll}>
+                  <Text style={styles.diffReplacementCodeText} selectable>
+                    {replacement}
+                  </Text>
+                </ScrollView>
+              </View>
+            ) : null}
+          </View>
+        )}
+
+        {/* Criação / Gravação de Arquivo Inteiro */}
+        {isWrite && content ? (
+          <View style={styles.diffReplacementCard}>
+            <View style={styles.diffReplacementHeader}>
+              <View style={styles.diffReplacementBadge}>
+                <FileCode size={11} color="#34d399" style={{ marginRight: 4 }} />
+                <Text style={styles.diffReplacementBadgeText}>Código gravado no arquivo</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.diffCopyBtn}
+                onPress={() => copyToClipboard(content, -13)}
+              >
+                <Copy size={11} color="#4ade80" />
+                <Text style={[styles.diffCopyText, { color: '#4ade80' }]}>Copiar</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.diffCodeScroll}>
+              <Text style={styles.diffReplacementCodeText} selectable>
+                {content}
+              </Text>
+            </ScrollView>
+          </View>
+        ) : null}
+
+        {/* Comando de Terminal */}
+        {isRun && (command || tc.detail) ? (
+          <View style={styles.diffTerminalCard}>
+            <View style={styles.diffTerminalHeader}>
+              <Terminal size={12} color="#38bdf8" style={{ marginRight: 6 }} />
+              <Text style={styles.diffTerminalTitle}>Comando executado</Text>
+              <TouchableOpacity
+                style={styles.diffCopyBtn}
+                onPress={() => copyToClipboard(command || tc.detail || '', -14)}
+              >
+                <Copy size={11} color="#38bdf8" />
+                <Text style={[styles.diffCopyText, { color: '#38bdf8' }]}>Copiar</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={true} style={styles.diffCodeScroll}>
+              <Text style={styles.diffTerminalCodeText} selectable>
+                $ {command || tc.detail}
+              </Text>
+            </ScrollView>
+          </View>
+        ) : null}
+
+        {/* Detalhe genérico caso não seja código/comando */}
+        {!isEdit && !isWrite && !isRun && tc.detail ? (
+          <View style={styles.toolDetailBox}>
+            <Text style={styles.toolDetailText} selectable>
+              {tc.detail}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
   const scrollToBottom = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     isAtBottomRef.current = true;
@@ -1078,13 +1219,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                   )}
                 </TouchableOpacity>
 
-                {isExpanded && tc.detail && (
-                  <View style={styles.toolDetailBox}>
-                    <Text style={styles.toolDetailText} selectable>
-                      {tc.detail}
-                    </Text>
-                  </View>
-                )}
+                {isExpanded && renderToolCallDetail(tc)}
               </View>
             );
           }
@@ -1784,6 +1919,154 @@ const styles = StyleSheet.create({
     color: '#38bdf8',
     fontSize: 11,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  toolDetailContainer: {
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  toolPathHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0d1117',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#30363d',
+  },
+  toolPathText: {
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: '#7dd3fc',
+    flex: 1,
+  },
+  toolCopyBtn: {
+    padding: 4,
+    marginLeft: 6,
+  },
+  diffWrapper: {
+    gap: 8,
+  },
+  diffTargetCard: {
+    backgroundColor: '#1f1315',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#7f1d1d',
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  diffTargetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#2d1417',
+    borderBottomWidth: 1,
+    borderBottomColor: '#451216',
+  },
+  diffTargetBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  diffTargetBadgeText: {
+    color: '#f87171',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  diffTargetCodeText: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 11,
+    color: '#fca5a5',
+    padding: 10,
+    lineHeight: 17,
+  },
+  diffReplacementCard: {
+    backgroundColor: '#0d1c15',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#064e3b',
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  diffReplacementHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#0f291e',
+    borderBottomWidth: 1,
+    borderBottomColor: '#134e3a',
+  },
+  diffReplacementBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(52, 211, 153, 0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  diffReplacementBadgeText: {
+    color: '#4ade80',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  diffReplacementCodeText: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 11,
+    color: '#86efac',
+    padding: 10,
+    lineHeight: 17,
+  },
+  diffTerminalCard: {
+    backgroundColor: '#090d16',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  diffTerminalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#0f172a',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  diffTerminalTitle: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '600',
+    flex: 1,
+  },
+  diffTerminalCodeText: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 11,
+    color: '#38bdf8',
+    padding: 10,
+    lineHeight: 17,
+  },
+  diffCopyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 4,
+  },
+  diffCopyText: {
+    fontSize: 10,
+    color: '#f87171',
+    marginLeft: 4,
+  },
+  diffCodeScroll: {
+    maxHeight: 280,
   },
   workingRow: {
     paddingVertical: 6,

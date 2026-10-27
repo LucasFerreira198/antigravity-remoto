@@ -25,6 +25,13 @@ export interface ToolCall {
   title?: string;
   icon?: string;
   detail?: string;
+  path?: string;
+  target?: string;
+  replacement?: string;
+  content?: string;
+  command?: string;
+  start_line?: number;
+  end_line?: number;
   args?: Record<string, any>;
   status?: string;
   questions?: QuestionItem[];

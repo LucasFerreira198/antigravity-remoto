@@ -114,11 +114,19 @@ class AntigravityService:
         title = name
         detail = ""
 
+        path = str(args.get("Path", ""))
+        target = str(args.get("Target", "")) if "Target" in args else None
+        replacement = str(args.get("Replacement", "")) if "Replacement" in args else None
+        content = str(args.get("Content", "")) if "Content" in args else None
+        command = str(args.get("CommandLine", "")) if "CommandLine" in args else None
+        start_line = args.get("StartLine")
+        end_line = args.get("EndLine")
+
         if name == "read_file":
-            path_str = str(args.get("Path", ""))
+            path_str = path
             basename = Path(path_str).name or path_str
-            start_l = args.get("StartLine")
-            end_l = args.get("EndLine")
+            start_l = start_line
+            end_l = end_line
             ext = Path(path_str).suffix.lower()
             badge = "📄"
             icon = "doc"
@@ -141,7 +149,7 @@ class AntigravityService:
             detail = path_str
         elif name in ["run_command"]:
             icon = "terminal"
-            cmd = str(args.get("CommandLine", ""))
+            cmd = command or str(args.get("CommandLine", ""))
             tool_sum = args.get("toolSummary")
             if tool_sum:
                 title = f"Ran {tool_sum}"
@@ -149,7 +157,7 @@ class AntigravityService:
                 title = f"Ran {cmd[:30]}..." if len(cmd) > 30 else f"Ran {cmd}"
             detail = cmd
         elif name in ["edit_file", "write_file"]:
-            path_str = str(args.get("Path", ""))
+            path_str = path
             basename = Path(path_str).name or path_str
             ext = Path(path_str).suffix.lower()
             badge = "🐍" if ext == ".py" else ("⚛" if ext in [".tsx", ".jsx"] else ("TS" if ext in [".ts", ".js"] else "📄"))
@@ -185,6 +193,13 @@ class AntigravityService:
             "title": title,
             "icon": icon,
             "detail": detail,
+            "path": path if path else None,
+            "target": target,
+            "replacement": replacement,
+            "content": content,
+            "command": command,
+            "start_line": start_line,
+            "end_line": end_line,
             "args": args,
             "questions": questions
         }
