@@ -105,7 +105,46 @@ interface SelectedAttachment {
   isImage: boolean;
 }
 
-export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: ChatScreenProps) {
+export default function ChatScreen({ conversation: rawConversation, onBack, onOpenArtifacts }: ChatScreenProps) {
+  // Normalização defensiva: garante id, título e projeto válidos mesmo se vindo de clique em notificação
+  const conversation: Conversation = useMemo(() => {
+    const raw = rawConversation as any;
+    const cid = String(raw?.id || raw?.conversation_id || '');
+    const ctitle = raw?.title || (raw?.preview ? raw.preview.slice(0, 30) : '') || 'Conversa';
+    const cproj = raw?.project_name || 'Antigravity';
+    return {
+      id: cid,
+      title: ctitle,
+      project_name: cproj,
+      preview: raw?.preview || '',
+      step_count: raw?.step_count || 0,
+      last_modified_time: raw?.last_modified_time || new Date().toISOString(),
+      workspace_uris: raw?.workspace_uris || [],
+      status: raw?.status || 'active',
+      is_active: raw?.is_active ?? false,
+      project_id: raw?.project_id || '',
+    };
+  }, [rawConversation]);
+
+  const [headerTitle, setHeaderTitle] = useState(conversation.title);
+  const [headerProject, setHeaderProject] = useState(conversation.project_name);
+
+  // Se o título for genérico ("Conversa"), resolver em segundo plano pela API
+  useEffect(() => {
+    setHeaderTitle(conversation.title);
+    setHeaderProject(conversation.project_name);
+
+    if (conversation.title === 'Conversa' || !conversation.title) {
+      api.getConversations().then((convos) => {
+        const found = convos.find((c) => c.id === conversation.id);
+        if (found) {
+          if (found.title) setHeaderTitle(found.title);
+          if (found.project_name) setHeaderProject(found.project_name);
+        }
+      }).catch(() => {});
+    }
+  }, [conversation.id, conversation.title]);
+
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isTablet = isTabletDevice(width);
@@ -1427,12 +1466,12 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
         <View style={styles.headerTitleWrap}>
           <Text style={styles.headerTitle} numberOfLines={1}>
-            {conversation.title}
+            {headerTitle || conversation.title}
           </Text>
           <View style={styles.headerSubRow}>
             <Folder size={11} color="#38bdf8" style={{ marginRight: 4 }} />
             <Text style={styles.headerSubText} numberOfLines={1}>
-              {conversation.project_name}
+              {headerProject || conversation.project_name}
             </Text>
             {isActive && (
               <View style={styles.activePill}>

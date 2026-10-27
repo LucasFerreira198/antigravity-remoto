@@ -54,7 +54,7 @@ class NotificationService {
         content: {
           title: '✨ Antigravity: Tarefa Concluída!',
           body: `A tarefa em "${conversationTitle || 'Conversa'}" foi finalizada pelo agente.`,
-          data: { conversationId, type: 'task_completed' },
+          data: { conversationId, conversationTitle, type: 'task_completed' },
           sound: 'default',
           priority: Notifications.AndroidNotificationPriority.HIGH,
         },
@@ -72,7 +72,7 @@ class NotificationService {
         content: {
           title: '❓ Antigravity: Pergunta Aguardando',
           body: `O agente perguntou: "${question}" em "${conversationTitle || 'Conversa'}".`,
-          data: { conversationId, type: 'question_asked' },
+          data: { conversationId, conversationTitle, type: 'question_asked' },
           sound: 'default',
           priority: Notifications.AndroidNotificationPriority.HIGH,
         },
@@ -90,7 +90,7 @@ class NotificationService {
         content: {
           title: '📋 Antigravity: Plano Pronto para Execução',
           body: `Um plano foi gerado na conversa "${conversationTitle || 'Conversa'}". Toque para revisar e dar Proceed.`,
-          data: { conversationId, type: 'plan_ready' },
+          data: { conversationId, conversationTitle, type: 'plan_ready' },
           sound: 'default',
           priority: Notifications.AndroidNotificationPriority.HIGH,
         },

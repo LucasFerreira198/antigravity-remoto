@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StyleSheet, View, ActivityIndicator, BackHandler } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -42,27 +42,83 @@ export default function App() {
   const [updateModalVisible, setUpdateModalVisible] = useState(false);
   const activeConversationsRef = useRef<Record<string, boolean>>({});
 
-  // Inicializar notificações e escutar toques do usuário
+  // Abrir conversa por ID garantindo metadados completos (título, projeto, etc.)
+  const openConversationById = useCallback(async (convoId: string, fallbackTitle?: string) => {
+    if (!convoId) return;
+
+    try {
+      let matchedConvo: Conversation | null = null;
+
+      // 1. Tentar encontrar no cache local de conversas (0ms)
+      const cachedList = await StorageService.getConversationsCache();
+      if (cachedList && cachedList.length > 0) {
+        const found = cachedList.find((c) => c.id === convoId);
+        if (found) matchedConvo = found;
+      }
+
+      // 2. Se não estiver no cache, consultar lista fresca da API
+      if (!matchedConvo) {
+        try {
+          const freshList = await api.getConversations();
+          if (freshList && freshList.length > 0) {
+            StorageService.saveConversationsCache(freshList);
+            const found = freshList.find((c) => c.id === convoId);
+            if (found) matchedConvo = found;
+          }
+        } catch (e) {}
+      }
+
+      // 3. Garantir objeto Conversation completo (evita chat vazio com id/título undefined)
+      const finalConvo: Conversation = matchedConvo || {
+        id: convoId,
+        title: fallbackTitle || 'Conversa',
+        preview: '',
+        step_count: 0,
+        last_modified_time: new Date().toISOString(),
+        workspace_uris: [],
+        status: 'active',
+        project_id: '',
+        project_name: 'Antigravity',
+        is_active: false,
+      };
+
+      setSelectedConversation(finalConvo);
+      setCurrentScreen('chat');
+    } catch (err) {
+      console.error('Erro ao abrir conversa por notificação:', err);
+    }
+  }, []);
+
+  // Inicializar notificações e escutar toques do usuário (em background e cold start)
   useEffect(() => {
     notificationService.init();
 
-    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-      const data = response.notification.request.content.data;
+    const handleNotificationResponse = (response: Notifications.NotificationResponse) => {
+      const data = response?.notification?.request?.content?.data;
       if (data && typeof data === 'object' && 'conversationId' in data && (data as any).conversationId) {
         const convoId = String((data as any).conversationId);
-        api.getConversation(convoId).then((convo) => {
-          if (convo) {
-            setSelectedConversation(convo as any);
-            setCurrentScreen('chat');
-          }
-        }).catch(() => {});
+        const convoTitle =
+          (data as any).conversationTitle ||
+          (response.notification.request.content.title
+            ? response.notification.request.content.title.replace(/^[^:]*:\s*/, '')
+            : undefined);
+        openConversationById(convoId, convoTitle);
       }
-    });
+    };
+
+    const sub = Notifications.addNotificationResponseReceivedListener(handleNotificationResponse);
+
+    // Tratar toque de notificação em inicialização a frio (app estava completamente fechado)
+    Notifications.getLastNotificationResponseAsync().then((lastRes) => {
+      if (lastRes) {
+        handleNotificationResponse(lastRes);
+      }
+    }).catch(() => {});
 
     return () => {
       sub.remove();
     };
-  }, []);
+  }, [openConversationById]);
 
   // Gerenciamento do botão voltar físico/gesto do Android para não fechar o app
   useEffect(() => {
@@ -322,12 +378,7 @@ export default function App() {
               onClose={() => setArtifactModalData({ visible: false, conversationId: '' })}
               onProceedSent={() => {
                 if (currentScreen !== 'chat') {
-                  api.getConversation(artifactModalData.conversationId).then((convo) => {
-                    if (convo) {
-                      setSelectedConversation(convo as any);
-                      setCurrentScreen('chat');
-                    }
-                  }).catch(() => {});
+                  openConversationById(artifactModalData.conversationId);
                 }
               }}
             />
