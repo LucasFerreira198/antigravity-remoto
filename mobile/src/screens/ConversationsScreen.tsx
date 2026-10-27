@@ -9,8 +9,9 @@ import {
   ActivityIndicator,
   RefreshControl,
   useWindowDimensions,
+  Alert,
 } from 'react-native';
-import { Plus, Search, FolderGit2, Clock, Layers, X, Code2 } from 'lucide-react-native';
+import { Plus, Search, FolderGit2, Clock, Layers, X, Code2, Trash2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { colors, isTabletDevice } from '../theme/colors';
 import { api } from '../services/api';
@@ -93,6 +94,30 @@ export default function ConversationsScreen({
     if (diffHours < 24) return `${diffHours}h atrás`;
     if (diffDays === 1) return 'Ontem';
     return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  };
+
+  const handleDeleteConversation = (convo: Conversation) => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    Alert.alert(
+      'Excluir Conversa',
+      `Deseja realmente remover a conversa "${convo.title}"?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.deleteConversation(convo.id);
+              setConversations((prev) => prev.filter((c) => c.id !== convo.id));
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } catch (err: any) {
+              Alert.alert('Erro ao excluir', err?.message || 'Falha ao excluir conversa.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -208,6 +233,7 @@ export default function ConversationsScreen({
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                     onSelectConversation(item);
                   }}
+                  onLongPress={() => handleDeleteConversation(item)}
                 >
                   <View style={styles.cardHeader}>
                     <View style={styles.titleWrap}>
@@ -216,14 +242,23 @@ export default function ConversationsScreen({
                         {item.title}
                       </Text>
                     </View>
-                    {isActive ? (
-                      <View style={styles.activeBadge}>
-                        <View style={styles.activeDot} />
-                        <Text style={styles.activeText}>Executando</Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.timeText}>{formatRelativeTime(item.last_modified_time)}</Text>
-                    )}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      {isActive ? (
+                        <View style={styles.activeBadge}>
+                          <View style={styles.activeDot} />
+                          <Text style={styles.activeText}>Executando</Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.timeText}>{formatRelativeTime(item.last_modified_time)}</Text>
+                      )}
+                      <TouchableOpacity
+                        style={styles.cardDeleteBtn}
+                        onPress={() => handleDeleteConversation(item)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Trash2 size={13} color="#64748b" />
+                      </TouchableOpacity>
+                    </View>
                   </View>
 
                   {item.preview ? (
@@ -400,6 +435,11 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 10,
     fontFamily: 'monospace',
+  },
+  cardDeleteBtn: {
+    padding: 4,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
   },
   activeBadge: {
     flexDirection: 'row',

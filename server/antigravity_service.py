@@ -63,10 +63,12 @@ class AntigravityService:
                        workspace_uris, status, source, project_id, agent_name, not_fully_idle, 
                        last_user_input_time
                 FROM conversation_summaries
+                WHERE (source IS NULL OR source != 'CORTEX_TRAJECTORY_SOURCE_CLI')
+                  AND (title IS NOT NULL AND TRIM(title) != '')
             """
             params = []
             if project_id:
-                query += " WHERE project_id = ?"
+                query += " AND project_id = ?"
                 params.append(project_id)
             
             query += " ORDER BY last_modified_time DESC LIMIT ?"
@@ -103,6 +105,26 @@ class AntigravityService:
             return results
         finally:
             conn.close()
+
+    def delete_conversation(self, conversation_id: str) -> bool:
+        """Exclui conversa do banco SQLite e do diretório brain."""
+        try:
+            if self.paths.CONVERSATION_SUMMARIES_DB.exists():
+                conn = sqlite3.connect(str(self.paths.CONVERSATION_SUMMARIES_DB))
+                try:
+                    c = conn.cursor()
+                    c.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (conversation_id,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            brain_dir = self.paths.BRAIN_DIR / conversation_id
+            if brain_dir.exists():
+                import shutil
+                shutil.rmtree(brain_dir, ignore_errors=True)
+            return True
+        except Exception as e:
+            print(f"Erro ao excluir conversa {conversation_id}: {e}")
+            return False
 
     def format_tool_call(self, tc: Dict[str, Any]) -> Dict[str, Any]:
         """Formata ferramentas executadas com ícones visuais e descrições idênticas ao desktop."""

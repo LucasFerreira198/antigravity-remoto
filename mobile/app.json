@@ -2,7 +2,7 @@
   "expo": {
     "name": "Antigravity Remoto",
     "slug": "antigravity-remote",
-    "version": "1.0.21",
+    "version": "1.0.22",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -16,7 +16,8 @@
     },
     "android": {
       "package": "com.lucasferreira.antigravityremote",
-      "versionCode": 22,
+      "versionCode": 23,
+      "softwareKeyboardLayoutMode": "pan",
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
@@ -29,7 +30,8 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.REQUEST_INSTALL_PACKAGES",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.VIBRATE"
+        "android.permission.VIBRATE",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -54,6 +56,13 @@
         {
           "icon": "./assets/icon.png",
           "color": "#8B5CF6"
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Permita o acesso ao microfone para ditar comandos por voz ao Antigravity.",
+          "speechRecognitionPermission": "Permita o reconhecimento de voz para transcrever sua fala para o Antigravity."
         }
       ]
     ]

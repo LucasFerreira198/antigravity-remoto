@@ -250,7 +250,7 @@ class CDPController:
             return None
 
     async def create_conversation_on_desktop(self, prompt: str, project_id: Optional[str] = None) -> Optional[str]:
-        """Cria nova conversa na janela do PC clicando em 'New Conversation' ou navegando para '/'."""
+        """Cria nova conversa na janela do PC no projeto selecionado (ou raiz)."""
         port = self.get_devtools_port()
         if not port:
             return None
@@ -268,18 +268,30 @@ class CDPController:
                         if msg.get("id") == msg_id:
                             return msg
 
-                # 1. Clicar em novo chat ou navegar para a home
-                new_chat_expr = """
-                (() => {
+                # 1. Navegar para novo chat no projeto selecionado ou home
+                safe_pid = json.dumps(project_id or "")
+                new_chat_expr = f"""
+                (() => {{
+                    const pid = {safe_pid};
+                    if (pid) {{
+                        const projLink = document.querySelector(`a[href*="section=${{pid}}"], a[href="/?section=${{pid}}"]`);
+                        if (projLink) {{
+                            projLink.click();
+                            return 'clicked_proj_link';
+                        }} else {{
+                            window.location.href = `/?section=${{pid}}`;
+                            return 'navigated_proj_section';
+                        }}
+                    }}
                     const newBtn = document.querySelector('button[aria-label="New Conversation"], a[href="/"], button[data-testid="new-conversation-button"]');
-                    if (newBtn) {
+                    if (newBtn) {{
                         newBtn.click();
                         return 'clicked_new';
-                    } else {
+                    }} else {{
                         window.location.href = '/';
                         return 'navigated_root';
-                    }
-                })()
+                    }}
+                }})()
                 """
                 await cdp_call("Runtime.evaluate", {"expression": new_chat_expr, "returnByValue": True}, msg_id=1)
                 await asyncio.sleep(1.0)
@@ -291,27 +303,49 @@ class CDPController:
                     const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
                     if (!el) return false;
                     el.focus();
+                    document.execCommand('selectAll', false, null);
                     document.execCommand('insertText', false, {safe_prompt});
                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     
-                    setTimeout(() => {{
-                        const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"]');
-                        if (btn) btn.click();
-                    }}, 300);
-                    return true;
+                    const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"]');
+                    if (btn && !btn.disabled) {{
+                        btn.click();
+                        return 'clicked_button';
+                    }}
+                    return 'need_enter';
                 }})()
                 """
-                await cdp_call("Runtime.evaluate", {"expression": type_expr, "returnByValue": True}, msg_id=2)
-                await asyncio.sleep(1.5)
+                res2 = await cdp_call("Runtime.evaluate", {"expression": type_expr, "returnByValue": True}, msg_id=2)
+                type_res = res2.get("result", {}).get("result", {}).get("value")
 
-                # 3. Ler o novo conversation_id da URL atual
-                url_expr = "window.location.pathname"
-                url_res = await cdp_call("Runtime.evaluate", {"expression": url_expr, "returnByValue": True}, msg_id=3)
-                pathname = url_res.get("result", {}).get("result", {}).get("value", "")
-                if "/c/" in pathname:
-                    new_id = pathname.split("/c/")[-1].split("/")[0].split("?")[0]
-                    return new_id
+                if type_res != 'clicked_button':
+                    await asyncio.sleep(0.2)
+                    await cdp_call("Input.dispatchKeyEvent", {
+                        "type": "rawKeyDown",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13,
+                        "text": "\r"
+                    }, msg_id=3)
+                    await cdp_call("Input.dispatchKeyEvent", {
+                        "type": "keyUp",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13
+                    }, msg_id=4)
+
+                # 3. Ler o novo conversation_id da URL atual com retry
+                for attempt in range(5):
+                    await asyncio.sleep(0.8)
+                    url_expr = "window.location.pathname"
+                    url_res = await cdp_call("Runtime.evaluate", {"expression": url_expr, "returnByValue": True}, msg_id=10 + attempt)
+                    pathname = url_res.get("result", {}).get("result", {}).get("value", "")
+                    if "/c/" in pathname:
+                        new_id = pathname.split("/c/")[-1].split("/")[0].split("?")[0]
+                        return new_id
                 return None
         except Exception as e:
             print(f"[CDP Controller] Erro ao criar conversa no desktop: {e}")

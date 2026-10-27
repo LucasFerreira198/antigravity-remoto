@@ -28,7 +28,7 @@ ws_lock = threading.Lock()
 main_loop: Optional[asyncio.AbstractEventLoop] = None
 
 class SendMessageRequest(BaseModel):
-    prompt: str
+    prompt: str = ""
     title: Optional[str] = None
     image_base64: Optional[str] = None
     image_filename: Optional[str] = None
@@ -243,11 +243,17 @@ async def create_conversation(req: NewConversationRequest):
         "model": req.model or "default"
     }
 
+@app.delete("/api/conversations/{conversation_id}", dependencies=[Depends(verify_token)])
+async def delete_conversation(conversation_id: str):
+    """Exclui uma conversa do histórico."""
+    success = service.delete_conversation(conversation_id)
+    return {"status": "deleted" if success else "error", "conversation_id": conversation_id}
+
 @app.post("/api/conversations/{conversation_id}/messages", dependencies=[Depends(verify_token)])
 async def send_message(conversation_id: str, req: SendMessageRequest):
     """Envia mensagem para a conversa: via CDP na interface do PC ou fallback para agy.exe, com suporte a imagens, documentos e APKs."""
     file_path = None
-    prompt_to_send = req.prompt
+    prompt_to_send = (req.prompt or "").strip()
 
     # 1. Tratar arquivo genérico anexado (documento, APK, código, zip, etc.)
     if req.file_base64:
@@ -260,7 +266,8 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
             saved_file.write_bytes(base64.b64decode(req.file_base64))
             file_path = str(saved_file.resolve())
             norm_link = file_path.replace("\\", "/")
-            prompt_to_send = f"{req.prompt.strip()}\n\n[Arquivo anexado: {fname}](file:///{norm_link})"
+            base_p = prompt_to_send if prompt_to_send else f"Analise o arquivo anexado: {fname}"
+            prompt_to_send = f"{base_p}\n\n[Arquivo anexado: {fname}](file:///{norm_link})"
         except Exception as e:
             print(f"Erro ao salvar arquivo anexado: {e}")
 
@@ -273,9 +280,13 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
             ext = ".png"
             if req.image_filename and "." in req.image_filename:
                 ext = Path(req.image_filename).suffix
-            saved_file = brain_uploads / f"media_{int(time.time() * 1000)}{ext}"
+            fname = req.image_filename or f"media_{int(time.time() * 1000)}{ext}"
+            saved_file = brain_uploads / fname
             saved_file.write_bytes(base64.b64decode(req.image_base64))
             file_path = str(saved_file.resolve())
+            norm_link = file_path.replace("\\", "/")
+            base_p = prompt_to_send if prompt_to_send else "Analise a imagem anexada."
+            prompt_to_send = f"{base_p}\n\n![Imagem anexada: {fname}](file:///{norm_link})"
         except Exception as e:
             print(f"Erro ao salvar imagem anexada: {e}")
 

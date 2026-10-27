@@ -56,11 +56,17 @@ import {
   Bot,
   Minus,
   Plus,
+  Mic,
+  MicAudioLines,
 } from 'lucide-react-native';
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from 'expo-speech-recognition';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import Markdown from 'react-native-markdown-display';
 import { api } from '../services/api';
 import { StorageService } from '../services/storage';
@@ -82,6 +88,12 @@ interface QueueItem {
   id: string;
   content: string;
   source: 'mobile' | 'pc';
+  attachment?: {
+    name: string;
+    isImage: boolean;
+    uri?: string;
+    base64?: string;
+  };
 }
 
 interface SelectedAttachment {
@@ -252,9 +264,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   useEffect(() => {
     const onShow = (e: any) => {
       const h = e.endCoordinates ? e.endCoordinates.height : 280;
-      if (Platform.OS === 'ios') {
-        setKeyboardHeight(h);
-      }
+      setKeyboardHeight(h);
       if (isAtBottomRef.current) {
         setTimeout(() => {
           flatListRef.current?.scrollToEnd({ animated: true });
@@ -262,9 +272,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       }
     };
     const onHide = () => {
-      if (Platform.OS === 'ios') {
-        setKeyboardHeight(0);
-      }
+      setKeyboardHeight(0);
     };
 
     const showSub = Keyboard.addListener(
@@ -281,6 +289,72 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       hideSub.remove();
     };
   }, []);
+
+  // Reconhecimento de Voz
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const voiceBasePromptRef = useRef<string>('');
+
+  useSpeechRecognitionEvent('start', () => {
+    setIsRecordingVoice(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  });
+
+  useSpeechRecognitionEvent('end', () => {
+    setIsRecordingVoice(false);
+  });
+
+  useSpeechRecognitionEvent('result', (event) => {
+    const recognizedText = event.results.map((r) => r.transcript).join(' ').trim();
+    if (recognizedText) {
+      const base = voiceBasePromptRef.current ? `${voiceBasePromptRef.current.trim()} ` : '';
+      const updatedPrompt = `${base}${recognizedText}`;
+      setInputPrompt(updatedPrompt);
+      StorageService.saveDraft(conversation.id, updatedPrompt);
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (event) => {
+    setIsRecordingVoice(false);
+    if (event.error !== 'aborted') {
+      console.warn('Erro reconhecimento de voz:', event.message || event.error);
+    }
+  });
+
+  const toggleVoiceRecognition = async () => {
+    try {
+      if (isRecordingVoice) {
+        ExpoSpeechRecognitionModule.stop();
+        setIsRecordingVoice(false);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        return;
+      }
+
+      const available = ExpoSpeechRecognitionModule.isRecognitionAvailable();
+      if (!available) {
+        Alert.alert('Reconhecimento Indisponível', 'O serviço de reconhecimento de voz não está disponível neste dispositivo Android.');
+        return;
+      }
+
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permissão Negada', 'Permita o acesso ao microfone para ditar comandos por voz.');
+        return;
+      }
+
+      voiceBasePromptRef.current = inputPrompt;
+      ExpoSpeechRecognitionModule.start({
+        lang: 'pt-BR',
+        interimResults: true,
+        continuous: true,
+      });
+      setIsRecordingVoice(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    } catch (err: any) {
+      console.error('Falha ao iniciar microfone:', err);
+      setIsRecordingVoice(false);
+      Alert.alert('Erro ao iniciar microfone', err?.message || 'Não foi possível iniciar o reconhecimento de voz.');
+    }
+  };
 
   // 1. Carregamento inicial (Cache instantâneo local + busca em rede + sync contínuo)
   useEffect(() => {
@@ -473,30 +547,54 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   };
 
   // Envio de mensagem ou resposta interativa
-  const handleSend = async (overrideText?: string, isQuestionAnswer = false) => {
-    const textToSend = (overrideText || inputPrompt).trim();
-    if (!textToSend && !selectedAttachment) return;
+  const handleSend = async (
+    overrideText?: string,
+    isQuestionAnswer = false,
+    overrideAttachment?: { name: string; isImage: boolean; uri: string; base64?: string }
+  ) => {
+    const rawAttachment = overrideAttachment || selectedAttachment;
+    const rawText = (overrideText !== undefined ? overrideText : inputPrompt).trim();
+    if (!rawText && !rawAttachment) return;
+
+    // Fallback de texto se enviou apenas anexo
+    const textToSend = rawText || (rawAttachment?.isImage ? 'Analise a imagem anexada.' : `Analise o arquivo anexado: ${rawAttachment?.name}`);
 
     // Limpar rascunho salvo ao enviar
     StorageService.clearDraft(conversation.id);
-    setInputPrompt('');
+    if (overrideText === undefined) {
+      setInputPrompt('');
+    }
 
-    const imagePayload = selectedAttachment?.isImage && selectedAttachment?.base64
-      ? { base64: selectedAttachment.base64, filename: selectedAttachment.name }
+    const imagePayload = rawAttachment?.isImage && rawAttachment?.base64
+      ? { base64: rawAttachment.base64, filename: rawAttachment.name }
       : undefined;
-    const filePayload = !selectedAttachment?.isImage && selectedAttachment?.base64
-      ? { base64: selectedAttachment.base64, filename: selectedAttachment.name }
+    const filePayload = !rawAttachment?.isImage && rawAttachment?.base64
+      ? { base64: rawAttachment.base64, filename: rawAttachment.name }
       : undefined;
-    const tempAttachmentUri = selectedAttachment?.uri;
-    const attachmentName = selectedAttachment?.name;
-    const isImageAttachment = selectedAttachment?.isImage;
-    setSelectedAttachment(null);
+    const tempAttachmentUri = rawAttachment?.uri;
+    const attachmentName = rawAttachment?.name;
+    const isImageAttachment = rawAttachment?.isImage;
+    if (!overrideAttachment) {
+      setSelectedAttachment(null);
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     // Se o assistente já estiver trabalhando (e NÃO for resposta a uma pergunta interativa)
     if (isActive && !isQuestionAnswer) {
       const qId = Date.now().toString();
-      setLocalQueue((prev) => [...prev, { id: qId, content: textToSend, source: 'mobile' }]);
+      const currentAttachment = rawAttachment ? {
+        name: rawAttachment.name,
+        isImage: rawAttachment.isImage,
+        uri: rawAttachment.uri,
+        base64: rawAttachment.base64,
+      } : undefined;
+
+      setLocalQueue((prev) => [...prev, {
+        id: qId,
+        content: textToSend,
+        source: 'mobile',
+        attachment: currentAttachment,
+      }]);
       setIsSending(true);
       try {
         await api.sendMessage(conversation.id, textToSend, undefined, imagePayload, filePayload);
@@ -995,7 +1093,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       style={[
         styles.container,
         {
-          paddingBottom: Platform.OS === 'ios' && keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 6),
+          paddingBottom: keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 6),
         },
       ]}
     >
@@ -1357,33 +1455,57 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
                     {item.source === 'pc' ? 'PC' : 'Celular'}
                   </Text>
                 </View>
+                {item.attachment && (
+                  <View style={styles.queuedAttachmentPill}>
+                    {item.attachment.isImage ? (
+                      <ImageIcon size={10} color="#38bdf8" style={{ marginRight: 4 }} />
+                    ) : (
+                      <FileText size={10} color="#a855f7" style={{ marginRight: 4 }} />
+                    )}
+                    <Text style={styles.queuedAttachmentText} numberOfLines={1}>
+                      {item.attachment.name}
+                    </Text>
+                  </View>
+                )}
                 <Text style={styles.queuedText} numberOfLines={2}>
                   {item.content}
                 </Text>
               </View>
               <View style={styles.queuedActionRow}>
-                {!isActive ? (
-                  <TouchableOpacity
-                    style={styles.queuedSendBtn}
-                    onPress={() => {
-                      handleSend(item.content);
-                      setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
-                      setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
-                    }}
-                  >
-                    <Send size={11} color="#ffffff" style={{ marginRight: 4 }} />
-                    <Text style={styles.queuedSendBtnText}>Enviar Agora</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.queuedWaitingPill}>
-                    <Clock size={11} color="#f59e0b" style={{ marginRight: 4 }} />
-                    <Text style={styles.queuedWaitingPillText}>Na fila do PC...</Text>
-                  </View>
-                )}
+                <TouchableOpacity
+                  style={[styles.queuedSendBtn, isActive && styles.queuedSendBtnActiveWaiting]}
+                  onPress={() => {
+                    handleSend(
+                      item.content,
+                      false,
+                      item.attachment ? {
+                        name: item.attachment.name,
+                        isImage: item.attachment.isImage,
+                        uri: item.attachment.uri || '',
+                        base64: item.attachment.base64
+                      } : undefined
+                    );
+                    setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
+                    setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
+                  }}
+                >
+                  <Send size={11} color="#ffffff" style={{ marginRight: 4 }} />
+                  <Text style={styles.queuedSendBtnText}>
+                    {isActive ? 'Forçar Envio' : 'Enviar Agora'}
+                  </Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.queuedEditBtn}
                   onPress={() => {
                     setInputPrompt(item.content);
+                    if (item.attachment) {
+                      setSelectedAttachment({
+                        name: item.attachment.name,
+                        isImage: item.attachment.isImage,
+                        uri: item.attachment.uri || '',
+                        base64: item.attachment.base64
+                      });
+                    }
                     setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
                     setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
                   }}
@@ -1488,6 +1610,21 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         </ScrollView>
       </View>
 
+      {/* Banner de Reconhecimento de Voz Ativo */}
+      {isRecordingVoice && (
+        <View style={styles.voiceRecordingBanner}>
+          <View style={styles.voicePulseDot} />
+          <MicAudioLines size={16} color="#38bdf8" style={{ marginRight: 6 }} />
+          <Text style={styles.voiceRecordingText}>Ouvindo... Diga sua instrução</Text>
+          <TouchableOpacity
+            style={styles.voiceStopBtn}
+            onPress={toggleVoiceRecognition}
+          >
+            <Text style={styles.voiceStopBtnText}>Concluir</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Input de Envio Shadcn com Foco Inteligente */}
       <View style={styles.inputContainer}>
         {/* Botão de Anexo de Foto */}
@@ -1507,6 +1644,19 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           }}
         >
           <Sparkles size={18} color="#a855f7" />
+        </TouchableOpacity>
+
+        {/* Botão de Reconhecimento de Voz */}
+        <TouchableOpacity
+          style={[styles.voiceBtn, isRecordingVoice && styles.voiceBtnActive]}
+          onPress={toggleVoiceRecognition}
+          activeOpacity={0.7}
+        >
+          {isRecordingVoice ? (
+            <MicAudioLines size={18} color="#ef4444" />
+          ) : (
+            <Mic size={18} color="#94a3b8" />
+          )}
         </TouchableOpacity>
 
         <TextInput
@@ -2374,10 +2524,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 7,
     paddingVertical: 3,
   },
+  queuedSendBtnActiveWaiting: {
+    backgroundColor: '#d97706',
+  },
   queuedSendBtnText: {
     color: '#ffffff',
     fontSize: 10,
     fontWeight: '700',
+  },
+  queuedAttachmentPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    marginTop: 2,
+    marginBottom: 2,
+    alignSelf: 'flex-start',
+    maxWidth: 200,
+  },
+  queuedAttachmentText: {
+    color: '#cbd5e1',
+    fontSize: 10,
+    fontWeight: '500',
   },
   queuedEditBtn: {
     backgroundColor: '#27272a',
@@ -2392,6 +2562,39 @@ const styles = StyleSheet.create({
   },
   queuedRemoveBtn: {
     padding: 3,
+  },
+  voiceRecordingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(56, 189, 248, 0.3)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  voicePulseDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#ef4444',
+    marginRight: 8,
+  },
+  voiceRecordingText: {
+    flex: 1,
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  voiceStopBtn: {
+    backgroundColor: '#ef4444',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  voiceStopBtnText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
   },
   quickActionsContainer: {
     paddingVertical: 6,
@@ -2448,6 +2651,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 6,
+  },
+  voiceBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: colors.backgroundModal,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 6,
+  },
+  voiceBtnActive: {
+    borderColor: '#ef4444',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
   },
   input: {
     flex: 1,

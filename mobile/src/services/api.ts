@@ -132,6 +132,12 @@ class ApiService {
     return this.request(`/api/conversations/${encodeURIComponent(id)}`);
   }
 
+  async deleteConversation(id: string): Promise<{ status: string; conversation_id: string }> {
+    return this.request(`/api/conversations/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  }
+
   async sendMessage(
     id: string,
     prompt: string,
