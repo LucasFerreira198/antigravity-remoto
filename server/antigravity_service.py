@@ -1001,6 +1001,8 @@ class AntigravityService:
             if base_cat != "Community":
                 return base_cat
             n = name.lower()
+            if any(k in n for k in ["rea", "reverse", "decompil", "binary", "frida", "ghidra", "radare", "ida", "disassembl"]):
+                return "Engenharia Reversa"
             if any(k in n for k in ["ai", "claude", "gemini", "gpt", "agent", "llm", "prompt", "reasoning", "orchestrat"]):
                 return "Agentes & IA"
             if any(k in n for k in ["test", "qa", "jest", "pytest", "cypress", "playwright", "audit", "security", "exploit", "pentest"]):

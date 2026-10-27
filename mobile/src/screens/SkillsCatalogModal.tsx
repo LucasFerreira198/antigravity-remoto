@@ -93,6 +93,7 @@ export default function SkillsCatalogModal({
     if (c.includes('chrome') || c.includes('devtools')) return <Globe size={13} color="#38bdf8" />;
     if (c.includes('firebase')) return <Flame size={13} color="#f59e0b" />;
     if (c.includes('gemini') || c.includes('ia') || c.includes('agente')) return <Bot size={13} color="#a855f7" />;
+    if (c.includes('engenharia reversa') || c.includes('reversa') || c.includes('reverse')) return <Wrench size={13} color="#10b981" />;
     if (c.includes('desenvolvimento') || c.includes('code')) return <Code2 size={13} color="#3b82f6" />;
     if (c.includes('teste') || c.includes('segurança')) return <Shield size={13} color="#ef4444" />;
     if (c.includes('cloud') || c.includes('devops')) return <Cloud size={13} color="#06b6d4" />;
