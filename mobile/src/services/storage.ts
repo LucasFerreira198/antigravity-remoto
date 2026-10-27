@@ -72,5 +72,33 @@ export const StorageService = {
     try {
       await AsyncStorage.setItem('@antigravity_remote:convos_cache', JSON.stringify(convos.slice(0, 60)));
     } catch (e) {}
+  },
+
+  async getDraft(conversationId: string): Promise<string> {
+    try {
+      const key = `@antigravity_remote:draft:${conversationId}`;
+      const data = await AsyncStorage.getItem(key);
+      return data || '';
+    } catch (e) {
+      return '';
+    }
+  },
+
+  async saveDraft(conversationId: string, text: string): Promise<void> {
+    try {
+      const key = `@antigravity_remote:draft:${conversationId}`;
+      if (text && text.trim()) {
+        await AsyncStorage.setItem(key, text);
+      } else {
+        await AsyncStorage.removeItem(key);
+      }
+    } catch (e) {}
+  },
+
+  async clearDraft(conversationId: string): Promise<void> {
+    try {
+      const key = `@antigravity_remote:draft:${conversationId}`;
+      await AsyncStorage.removeItem(key);
+    } catch (e) {}
   }
 };

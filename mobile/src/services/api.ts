@@ -132,14 +132,22 @@ class ApiService {
     return this.request(`/api/conversations/${encodeURIComponent(id)}`);
   }
 
-  async sendMessage(id: string, prompt: string, title?: string, image?: { base64: string; filename: string }): Promise<any> {
+  async sendMessage(
+    id: string,
+    prompt: string,
+    title?: string,
+    image?: { base64: string; filename: string },
+    file?: { base64: string; filename: string }
+  ): Promise<any> {
     return this.request(`/api/conversations/${encodeURIComponent(id)}/messages`, {
       method: 'POST',
       body: JSON.stringify({
         prompt,
         title,
         image_base64: image?.base64,
-        image_filename: image?.filename
+        image_filename: image?.filename,
+        file_base64: file?.base64,
+        file_filename: file?.filename
       })
     });
   }
@@ -182,8 +190,11 @@ class ApiService {
     return this.request(`/api/artifacts/${encodeURIComponent(conversationId)}/${encodeURIComponent(filename)}`);
   }
 
-  async getBackgroundTasks(conversationId: string): Promise<BackgroundTask[]> {
-    const res = await this.request<{ tasks: BackgroundTask[] }>(`/api/conversations/${encodeURIComponent(conversationId)}/background-tasks`);
+  async getBackgroundTasks(conversationId?: string): Promise<BackgroundTask[]> {
+    const endpoint = conversationId
+      ? `/api/conversations/${encodeURIComponent(conversationId)}/background-tasks`
+      : '/api/background-tasks';
+    const res = await this.request<{ tasks: BackgroundTask[] }>(endpoint);
     return res.tasks || [];
   }
 

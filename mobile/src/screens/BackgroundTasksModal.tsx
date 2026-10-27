@@ -62,7 +62,7 @@ export default function BackgroundTasksModal({
 
   useEffect(() => {
     let interval: any;
-    if (visible && activeConvoId) {
+    if (visible) {
       loadTasks();
       interval = setInterval(loadTasksSilently, 3000);
     }
@@ -72,25 +72,23 @@ export default function BackgroundTasksModal({
   }, [visible, activeConvoId]);
 
   const loadTasks = async () => {
-    if (!activeConvoId) return;
     setIsLoading(true);
     try {
-      const data = await api.getBackgroundTasks(activeConvoId);
+      const data = await api.getBackgroundTasks(activeConvoId || undefined);
       setTasks(data);
       if (data.length > 0 && !selectedTask) {
         setSelectedTask(data[0]);
       }
     } catch (e) {
-      console.error('Erro ao carregar tarefas em background:', e);
+      console.warn('Erro ao carregar tarefas em background:', e);
     } finally {
       setIsLoading(false);
     }
   };
 
   const loadTasksSilently = async () => {
-    if (!activeConvoId) return;
     try {
-      const data = await api.getBackgroundTasks(activeConvoId);
+      const data = await api.getBackgroundTasks(activeConvoId || undefined);
       setTasks(data);
       if (selectedTask) {
         const fresh = data.find((t) => t.task_id === selectedTask.task_id);

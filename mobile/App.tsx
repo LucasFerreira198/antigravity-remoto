@@ -8,7 +8,7 @@ import { StorageService } from './src/services/storage';
 import { api } from './src/services/api';
 import { BridgeResolver } from './src/services/bridgeResolver';
 import { notificationService } from './src/services/notificationService';
-import { Conversation } from './src/types';
+import { Conversation, Artifact } from './src/types';
 
 import ConnectScreen from './src/screens/ConnectScreen';
 import ConversationsScreen from './src/screens/ConversationsScreen';
@@ -31,7 +31,11 @@ export default function App() {
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [newConvoModalVisible, setNewConvoModalVisible] = useState(false);
   const [backgroundTasksModalVisible, setBackgroundTasksModalVisible] = useState(false);
-  const [artifactModalData, setArtifactModalData] = useState<{ visible: boolean; conversationId: string }>({
+  const [artifactModalData, setArtifactModalData] = useState<{
+    visible: boolean;
+    conversationId: string;
+    initialArtifacts?: Artifact[];
+  }>({
     visible: false,
     conversationId: '',
   });
@@ -249,8 +253,12 @@ export default function App() {
                   setSelectedConversation(null);
                   setCurrentScreen('conversations');
                 }}
-                onOpenArtifacts={(convoId) => {
-                  setArtifactModalData({ visible: true, conversationId: convoId });
+                onOpenArtifacts={(convoId, initialArts) => {
+                  setArtifactModalData({
+                    visible: true,
+                    conversationId: convoId,
+                    initialArtifacts: initialArts,
+                  });
                 }}
               />
             )}
@@ -310,6 +318,7 @@ export default function App() {
             <ArtifactViewerModal
               visible={artifactModalData.visible}
               conversationId={artifactModalData.conversationId}
+              initialArtifacts={artifactModalData.initialArtifacts}
               onClose={() => setArtifactModalData({ visible: false, conversationId: '' })}
               onProceedSent={() => {
                 if (currentScreen !== 'chat') {

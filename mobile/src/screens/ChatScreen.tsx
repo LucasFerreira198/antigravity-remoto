@@ -57,6 +57,8 @@ import {
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
 import Markdown from 'react-native-markdown-display';
 import { api } from '../services/api';
 import { StorageService } from '../services/storage';
@@ -71,13 +73,22 @@ import { notificationService } from '../services/notificationService';
 interface ChatScreenProps {
   conversation: Conversation;
   onBack: () => void;
-  onOpenArtifacts: (conversationId: string) => void;
+  onOpenArtifacts: (conversationId: string, initialArtifacts?: Artifact[]) => void;
 }
 
 interface QueueItem {
   id: string;
   content: string;
   source: 'mobile' | 'pc';
+}
+
+interface SelectedAttachment {
+  uri: string;
+  name: string;
+  size?: number;
+  mimeType?: string;
+  base64?: string;
+  isImage: boolean;
 }
 
 export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: ChatScreenProps) {
@@ -164,9 +175,18 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     };
   }, [isActive, isSending]);
 
-  // Anexo de Imagem
-  const [selectedImage, setSelectedImage] = useState<{ uri: string; base64: string; filename: string } | null>(null);
+  // Anexo de Imagem e Arquivos
+  const [selectedAttachment, setSelectedAttachment] = useState<SelectedAttachment | null>(null);
   const [showImagePickerModal, setShowImagePickerModal] = useState(false);
+
+  // Carregar rascunho salvo ao entrar na conversa
+  useEffect(() => {
+    StorageService.getDraft(conversation.id).then((savedDraft) => {
+      if (savedDraft) {
+        setInputPrompt(savedDraft);
+      }
+    });
+  }, [conversation.id]);
 
   // Parar conversa/execução do Antigravity
   const handleStopConversation = async () => {
@@ -435,12 +455,22 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   // Envio de mensagem ou resposta interativa
   const handleSend = async (overrideText?: string, isQuestionAnswer = false) => {
     const textToSend = (overrideText || inputPrompt).trim();
-    if (!textToSend && !selectedImage) return;
+    if (!textToSend && !selectedAttachment) return;
 
+    // Limpar rascunho salvo ao enviar
+    StorageService.clearDraft(conversation.id);
     setInputPrompt('');
-    const imagePayload = selectedImage ? { base64: selectedImage.base64, filename: selectedImage.filename } : undefined;
-    const tempImageUri = selectedImage?.uri;
-    setSelectedImage(null);
+
+    const imagePayload = selectedAttachment?.isImage && selectedAttachment?.base64
+      ? { base64: selectedAttachment.base64, filename: selectedAttachment.name }
+      : undefined;
+    const filePayload = !selectedAttachment?.isImage && selectedAttachment?.base64
+      ? { base64: selectedAttachment.base64, filename: selectedAttachment.name }
+      : undefined;
+    const tempAttachmentUri = selectedAttachment?.uri;
+    const attachmentName = selectedAttachment?.name;
+    const isImageAttachment = selectedAttachment?.isImage;
+    setSelectedAttachment(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     // Se o assistente já estiver trabalhando (e NÃO for resposta a uma pergunta interativa)
@@ -449,7 +479,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       setLocalQueue((prev) => [...prev, { id: qId, content: textToSend, source: 'mobile' }]);
       setIsSending(true);
       try {
-        await api.sendMessage(conversation.id, textToSend, undefined, imagePayload);
+        await api.sendMessage(conversation.id, textToSend, undefined, imagePayload, filePayload);
         loadAuxData();
       } catch (e) {
         console.error('Erro ao enviar mensagem para a fila:', e);
@@ -461,12 +491,13 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
     // Mensagem otimista imediata na tela (quando o agente está livre)
     const tempIndex = messages.length ? Math.max(...messages.map((m) => m.step_index)) + 1 : 1;
+    const optimisticContent = filePayload ? `${textToSend}\n\n📎 *${attachmentName}*` : textToSend;
     const optimisticMsg: Message = {
       role: 'user',
       step_index: tempIndex,
       created_at: new Date().toISOString(),
-      content: textToSend,
-      media: tempImageUri ? [{ mime_type: 'image/png', filename: 'upload.png', local_uri: tempImageUri }] : undefined,
+      content: optimisticContent,
+      media: isImageAttachment && tempAttachmentUri ? [{ mime_type: 'image/png', filename: attachmentName || 'upload.png', local_uri: tempAttachmentUri }] : undefined,
       type: 'user_message',
     };
     setMessages((prev) => [...prev, optimisticMsg]);
@@ -478,7 +509,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     }, 100);
 
     try {
-      await api.sendMessage(conversation.id, textToSend, undefined, imagePayload);
+      await api.sendMessage(conversation.id, textToSend, undefined, imagePayload, filePayload);
       loadAuxData();
 
       // Polling de garantia enquanto o modelo responde
@@ -524,7 +555,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     }
   };
 
-  // Seleção de Imagens
+  // Seleção de Imagens e Arquivos
   const pickImageFromGallery = async () => {
     setShowImagePickerModal(false);
     try {
@@ -542,10 +573,13 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
         if (asset.base64) {
-          setSelectedImage({
+          setSelectedAttachment({
             uri: asset.uri,
+            name: asset.fileName || `image_${Date.now()}.png`,
+            size: asset.fileSize,
+            mimeType: asset.mimeType || 'image/png',
             base64: asset.base64,
-            filename: asset.fileName || `image_${Date.now()}.png`,
+            isImage: true,
           });
           Haptics.selectionAsync();
         }
@@ -571,16 +605,73 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
         if (asset.base64) {
-          setSelectedImage({
+          setSelectedAttachment({
             uri: asset.uri,
+            name: `photo_${Date.now()}.jpg`,
+            size: asset.fileSize,
+            mimeType: 'image/jpeg',
             base64: asset.base64,
-            filename: `photo_${Date.now()}.jpg`,
+            isImage: true,
           });
           Haptics.selectionAsync();
         }
       }
     } catch (e: any) {
       Alert.alert('Erro na câmera', e.message);
+    }
+  };
+
+  const pickGenericDocument = async () => {
+    setShowImagePickerModal(false);
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+      });
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        const asset = res.assets[0];
+        const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        setSelectedAttachment({
+          uri: asset.uri,
+          name: asset.name || `arquivo_${Date.now()}`,
+          size: asset.size,
+          mimeType: asset.mimeType || 'application/octet-stream',
+          base64: base64,
+          isImage: false,
+        });
+        Haptics.selectionAsync();
+      }
+    } catch (e: any) {
+      Alert.alert('Erro ao anexar arquivo', e.message);
+    }
+  };
+
+  const pickApkFile = async () => {
+    setShowImagePickerModal(false);
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: ['application/vnd.android.package-archive', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        const asset = res.assets[0];
+        const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        setSelectedAttachment({
+          uri: asset.uri,
+          name: asset.name || `app_${Date.now()}.apk`,
+          size: asset.size,
+          mimeType: 'application/vnd.android.package-archive',
+          base64: base64,
+          isImage: false,
+        });
+        Haptics.selectionAsync();
+      }
+    } catch (e: any) {
+      Alert.alert('Erro ao anexar APK', e.message);
     }
   };
 
@@ -835,7 +926,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           {artifacts.length > 0 && (
             <TouchableOpacity
               style={[styles.artifactsBtn, hasPendingPlan && styles.artifactsBtnHighlight]}
-              onPress={() => onOpenArtifacts(conversation.id)}
+              onPress={() => onOpenArtifacts(conversation.id, artifacts)}
               activeOpacity={0.7}
             >
               <FileText size={17} color={hasPendingPlan ? '#34d399' : '#38bdf8'} />
@@ -1019,19 +1110,29 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         </TouchableOpacity>
       )}
 
-      {/* Preview de Imagem Anexada */}
-      {selectedImage && (
+      {/* Preview de Anexo (Imagem ou Arquivo) */}
+      {selectedAttachment && (
         <View style={styles.imagePreviewWrap}>
-          <Image source={{ uri: selectedImage.uri }} style={styles.imagePreviewThumb} />
+          {selectedAttachment.isImage ? (
+            <Image source={{ uri: selectedAttachment.uri }} style={styles.imagePreviewThumb} />
+          ) : (
+            <View style={styles.filePreviewIconBox}>
+              <FileText size={24} color="#a855f7" />
+            </View>
+          )}
           <View style={{ flex: 1, marginLeft: 10 }}>
             <Text style={styles.imagePreviewTitle} numberOfLines={1}>
-              {selectedImage.filename}
+              {selectedAttachment.name}
             </Text>
-            <Text style={styles.imagePreviewSub}>Imagem pronta para envio</Text>
+            <Text style={styles.imagePreviewSub}>
+              {selectedAttachment.size
+                ? `${(selectedAttachment.size / 1024).toFixed(0)} KB • Arquivo pronto para envio`
+                : 'Pronto para envio'}
+            </Text>
           </View>
           <TouchableOpacity
             style={styles.removeImageBtn}
-            onPress={() => setSelectedImage(null)}
+            onPress={() => setSelectedAttachment(null)}
           >
             <X size={16} color="#ef4444" />
           </TouchableOpacity>
@@ -1249,7 +1350,10 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           placeholder="Digite para o Antigravity..."
           placeholderTextColor="#64748b"
           value={inputPrompt}
-          onChangeText={setInputPrompt}
+          onChangeText={(text) => {
+            setInputPrompt(text);
+            StorageService.saveDraft(conversation.id, text);
+          }}
           onFocus={() => {
             setTimeout(() => {
               flatListRef.current?.scrollToEnd({ animated: true });
@@ -1259,7 +1363,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           maxLength={8000}
         />
 
-        {isActive && !inputPrompt.trim() && !selectedImage ? (
+        {isActive && !inputPrompt.trim() && !selectedAttachment ? (
           <TouchableOpacity
             style={styles.stopInputBtn}
             onPress={handleStopConversation}
@@ -1274,9 +1378,9 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={[styles.sendBtn, (!inputPrompt.trim() && !selectedImage) && styles.sendBtnDisabled]}
+            style={[styles.sendBtn, (!inputPrompt.trim() && !selectedAttachment) && styles.sendBtnDisabled]}
             onPress={() => handleSend()}
-            disabled={!inputPrompt.trim() && !selectedImage}
+            disabled={!inputPrompt.trim() && !selectedAttachment}
           >
             {isSending ? (
               <ActivityIndicator size="small" color="#ffffff" />
@@ -1287,7 +1391,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         )}
       </View>
 
-      {/* Modal de Escolha da Imagem */}
+      {/* Modal de Escolha de Anexo (Imagem, Documentos, APKs) */}
       <Modal
         visible={showImagePickerModal}
         transparent
@@ -1300,7 +1404,7 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
           onPress={() => setShowImagePickerModal(false)}
         >
           <View style={styles.pickerModalContent}>
-            <Text style={styles.pickerModalTitle}>Anexar Imagem</Text>
+            <Text style={styles.pickerModalTitle}>Anexar ao Antigravity</Text>
 
             <TouchableOpacity style={styles.pickerOption} onPress={takePhotoWithCamera}>
               <Camera size={20} color="#38bdf8" style={{ marginRight: 12 }} />
@@ -1309,7 +1413,17 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
 
             <TouchableOpacity style={styles.pickerOption} onPress={pickImageFromGallery}>
               <ImageIcon size={20} color="#34d399" style={{ marginRight: 12 }} />
-              <Text style={styles.pickerOptionText}>Escolher da Galeria</Text>
+              <Text style={styles.pickerOptionText}>Foto da Galeria</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.pickerOption} onPress={pickGenericDocument}>
+              <FileText size={20} color="#a855f7" style={{ marginRight: 12 }} />
+              <Text style={styles.pickerOptionText}>Documento ou Código (PDF, TXT, MD, etc.)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.pickerOption} onPress={pickApkFile}>
+              <Smartphone size={20} color="#f59e0b" style={{ marginRight: 12 }} />
+              <Text style={styles.pickerOptionText}>Aplicativo Android (.APK)</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1793,6 +1907,16 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 6,
+  },
+  filePreviewIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#1e1b4b',
+    borderWidth: 1,
+    borderColor: '#4338ca',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   imagePreviewTitle: {
     color: '#fafafa',

@@ -24,6 +24,7 @@ import { Artifact } from '../types';
 interface ArtifactViewerModalProps {
   visible: boolean;
   conversationId: string;
+  initialArtifacts?: Artifact[];
   onClose: () => void;
   onProceedSent?: () => void;
 }
@@ -31,25 +32,32 @@ interface ArtifactViewerModalProps {
 export default function ArtifactViewerModal({
   visible,
   conversationId,
+  initialArtifacts,
   onClose,
   onProceedSent,
 }: ArtifactViewerModalProps) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isTablet = isTabletDevice(width);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>(initialArtifacts || []);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
   const [contentData, setContentData] = useState<any>(null);
-  const [isLoadingList, setIsLoadingList] = useState(true);
+  const [isLoadingList, setIsLoadingList] = useState(!initialArtifacts || initialArtifacts.length === 0);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isProceeding, setIsProceeding] = useState(false);
 
   useEffect(() => {
-    if (visible && conversationId) {
-      loadArtifacts();
+    if (visible) {
+      if (initialArtifacts && initialArtifacts.length > 0) {
+        setArtifacts(initialArtifacts);
+        setIsLoadingList(false);
+      }
+      if (conversationId) {
+        loadArtifacts();
+      }
     }
-  }, [visible, conversationId]);
+  }, [visible, conversationId, initialArtifacts]);
 
   useEffect(() => {
     if (!visible) return;
@@ -67,14 +75,16 @@ export default function ArtifactViewerModal({
   }, [visible, selectedArtifact]);
 
   const loadArtifacts = async () => {
-    setIsLoadingList(true);
-    setSelectedArtifact(null);
-    setContentData(null);
+    if (!artifacts.length) {
+      setIsLoadingList(true);
+    }
     try {
       const data = await api.getConversation(conversationId);
-      setArtifacts(data.artifacts || []);
+      if (data && data.artifacts) {
+        setArtifacts(data.artifacts);
+      }
     } catch (e) {
-      console.error('Erro ao carregar artefatos:', e);
+      console.warn('Erro ao atualizar artefatos:', e);
     } finally {
       setIsLoadingList(false);
     }

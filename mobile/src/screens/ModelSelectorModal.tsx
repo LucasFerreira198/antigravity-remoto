@@ -25,6 +25,14 @@ interface ModelSelectorModalProps {
   onModelSelected: (modelName: string) => void;
 }
 
+const FALLBACK_MODELS: ModelOption[] = [
+  { name: 'Gemini 3.8 Flash', badge: 'High', text: 'Gemini 3.8 Flash' },
+  { name: 'Claude Sonnet 4.6 (Thinking)', badge: 'Notice', text: 'Claude Sonnet 4.6 (Thinking)' },
+  { name: 'Claude Opus 4.6 (Thinking)', badge: 'Notice', text: 'Claude Opus 4.6 (Thinking)' },
+  { name: 'GPT-OSS 120B (Medium)', badge: 'Notice', text: 'GPT-OSS 120B (Medium)' },
+  { name: 'Gemini 4 Argon', badge: 'Unavailable', text: 'Gemini 4 Argon' },
+];
+
 export default function ModelSelectorModal({
   visible,
   conversationId,
@@ -35,9 +43,9 @@ export default function ModelSelectorModal({
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isTablet = isTabletDevice(width);
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const [models, setModels] = useState<ModelOption[]>(FALLBACK_MODELS);
   const [activeModel, setActiveModel] = useState<string>(currentModelName || 'Gemini 3.8 Flash High');
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [isSwitching, setIsSwitching] = useState<string | null>(null);
 
   useEffect(() => {
@@ -60,14 +68,17 @@ export default function ModelSelectorModal({
     setIsLoading(true);
     try {
       const data = await api.getModels(conversationId);
-      if (data.available_models && data.available_models.length > 0) {
+      if (data && data.available_models && data.available_models.length > 0) {
         setModels(data.available_models);
+      } else {
+        setModels(FALLBACK_MODELS);
       }
-      if (data.current_model) {
+      if (data && data.current_model) {
         setActiveModel(data.current_model);
       }
     } catch (e) {
-      console.error('Erro ao buscar modelos:', e);
+      console.warn('Usando modelos de contingência:', e);
+      setModels(FALLBACK_MODELS);
     } finally {
       setIsLoading(false);
     }

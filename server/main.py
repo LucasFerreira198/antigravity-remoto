@@ -32,6 +32,8 @@ class SendMessageRequest(BaseModel):
     title: Optional[str] = None
     image_base64: Optional[str] = None
     image_filename: Optional[str] = None
+    file_base64: Optional[str] = None
+    file_filename: Optional[str] = None
 
 class NewConversationRequest(BaseModel):
     prompt: str
@@ -243,9 +245,27 @@ async def create_conversation(req: NewConversationRequest):
 
 @app.post("/api/conversations/{conversation_id}/messages", dependencies=[Depends(verify_token)])
 async def send_message(conversation_id: str, req: SendMessageRequest):
-    """Envia mensagem para a conversa: via CDP na interface do PC ou fallback para agy.exe, com suporte a imagem."""
+    """Envia mensagem para a conversa: via CDP na interface do PC ou fallback para agy.exe, com suporte a imagens, documentos e APKs."""
     file_path = None
-    if req.image_base64:
+    prompt_to_send = req.prompt
+
+    # 1. Tratar arquivo genérico anexado (documento, APK, código, zip, etc.)
+    if req.file_base64:
+        try:
+            import base64, time
+            brain_uploads = service.paths.BRAIN_DIR / conversation_id / ".user_uploaded"
+            brain_uploads.mkdir(parents=True, exist_ok=True)
+            fname = req.file_filename or f"file_{int(time.time() * 1000)}"
+            saved_file = brain_uploads / fname
+            saved_file.write_bytes(base64.b64decode(req.file_base64))
+            file_path = str(saved_file.resolve())
+            norm_link = file_path.replace("\\", "/")
+            prompt_to_send = f"{req.prompt.strip()}\n\n[Arquivo anexado: {fname}](file:///{norm_link})"
+        except Exception as e:
+            print(f"Erro ao salvar arquivo anexado: {e}")
+
+    # 2. Tratar imagem anexada
+    elif req.image_base64:
         try:
             import base64, time
             brain_uploads = service.paths.BRAIN_DIR / conversation_id / ".user_uploaded"
@@ -261,7 +281,7 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
 
     # 1. Enviar diretamente para a janela do PC via CDP (executa na tela do PC)
     if await cdp_controller.is_desktop_available():
-        success = await cdp_controller.send_message_to_desktop(conversation_id, req.prompt, file_path=file_path)
+        success = await cdp_controller.send_message_to_desktop(conversation_id, prompt_to_send, file_path=file_path)
         if success:
             return {
                 "status": "executing_desktop",
@@ -281,7 +301,7 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
 
         service.execute_turn_stream(
             conversation_id=conversation_id,
-            prompt=req.prompt,
+            prompt=prompt_to_send,
             on_line=on_line
         )
 
@@ -339,6 +359,14 @@ def get_media_file(conversation_id: str, filename: str):
     return FileResponse(str(target), media_type=mime)
 
 # ----------------- TAREFAS EM SEGUNDO PLANO -----------------
+
+@app.get("/api/background-tasks", dependencies=[Depends(verify_token)])
+def get_global_background_tasks():
+    """Lista tarefas em segundo plano e servidores rodando no sistema."""
+    convos = service.list_conversations(limit=1)
+    cid = convos[0]["id"] if convos else "global"
+    tasks = service.get_background_tasks(cid)
+    return {"tasks": tasks}
 
 @app.get("/api/conversations/{conversation_id}/background-tasks", dependencies=[Depends(verify_token)])
 def get_background_tasks(conversation_id: str):

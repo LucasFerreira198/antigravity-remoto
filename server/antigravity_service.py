@@ -695,7 +695,7 @@ class AntigravityService:
             if 'uvicorn' in d or 'server.main' in d or 'uvicorn' in s:
                 return 'Servidor Uvicorn (FastAPI Python)'
             if 'cloudflared' in d or 'tunnel' in d:
-                return 'Túnel Cloudflare (Acesso Remoto)'
+                return 'Tunel Cloudflare (Acesso Remoto)'
             if 'vite' in d:
                 return 'Vite Dev Server'
             if 'expo' in d or 'metro' in d:
@@ -858,12 +858,12 @@ class AntigravityService:
                 "log_tail": u_log_tail
             })
 
-        # Se o túnel Cloudflare estiver ativo no SO
+        # Se o tunel Cloudflare estiver ativo no SO
         if os_cloudflared_pid:
             result.append({
                 "task_id": "cloudflare-tunnel",
                 "full_id": f"{conversation_id}/cloudflare-tunnel",
-                "name": "Túnel Cloudflare (Acesso Remoto)",
+                "name": "Tunel Cloudflare (Acesso Remoto)",
                 "description": "cloudflared tunnel --url http://127.0.0.1:8765",
                 "created_at": datetime.datetime.now().isoformat(),
                 "status": "running",
@@ -873,7 +873,7 @@ class AntigravityService:
                 "port": None,
                 "memory_mb": None,
                 "log_size": 0,
-                "log_tail": "Túnel seguro Cloudflare ativo conectando o aplicativo ao computador."
+                "log_tail": "Tunel seguro Cloudflare ativo conectando o aplicativo ao computador."
             })
 
         return result

@@ -155,16 +155,16 @@ class TunnelManager:
             try:
                 saved = self.url_file.read_text().strip()
                 if saved.startswith("https://") and "trycloudflare.com" in saved:
-                    if self._is_cloudflared_running() and self._is_url_alive(saved, timeout=7):
+                    if self._is_cloudflared_running():
                         self.public_url = saved
-                        print(f"\n[Tunnel] Reutilizando túnel ativo e verificado: {self.public_url}\n")
+                        print(f"\n[Tunnel] Reutilizando túnel ativo em execução: {self.public_url}\n")
                         self.publish_rendezvous()
                         self._start_watchdog()
                         if on_url_ready:
                             on_url_ready(self.public_url)
                         return self.public_url
                     else:
-                        print(f"[Tunnel] Túnel anterior ({saved}) não está ativo. Renovando...")
+                        print(f"[Tunnel] Túnel anterior ({saved}) não está ativo no sistema. Renovando...")
                         self.kill_existing_cloudflared()
             except Exception:
                 pass
@@ -261,25 +261,14 @@ class TunnelManager:
                 if self.should_stop:
                     break
 
-                # 1. Verificar se processo morreu
+                # 1. Verificar se o processo cloudflared encerrou
                 if not self.process or self.process.poll() is not None:
-                    print("[Watchdog] Túnel Cloudflare desconectado! Reiniciando ponte...")
+                    print("[Watchdog] Processo cloudflared encerrou inesperadamente. Reiniciando túnel...")
                     self._spawn_process()
-                elif self.public_url:
-                    # 2. Verificar saúde da URL com tolerância a oscilações momentâneas
-                    alive = self._is_url_alive(self.public_url, timeout=8)
-                    if alive:
-                        self.consecutive_health_failures = 0
-                    else:
-                        self.consecutive_health_failures += 1
-                        if self.consecutive_health_failures >= 4:
-                            print(f"[Watchdog] URL do túnel não responde após 4 tentativas. Renovando conexão...")
-                            self.stop_tunnel()
-                            self.should_stop = False
-                            self._spawn_process()
 
-                # 3. Publicar heartbeat periódico na nuvem para manter o tópico ntfy sempre recente
-                self.publish_rendezvous()
+                # 2. Publicar heartbeat periódico na nuvem para manter o tópico ntfy sempre atualizado
+                if self.public_url:
+                    self.publish_rendezvous()
 
         self.watchdog_thread = threading.Thread(target=watchdog_loop, daemon=True)
         self.watchdog_thread.start()

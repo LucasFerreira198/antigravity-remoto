@@ -1,6 +1,6 @@
 {
   "name": "antigravity-remote",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -13,6 +13,7 @@
     "expo": "~57.0.26",
     "expo-camera": "~57.0.6",
     "expo-constants": "~57.0.20",
+    "expo-document-picker": "~57.0.3",
     "expo-file-system": "~57.0.7",
     "expo-haptics": "~57.0.3",
     "expo-image-picker": "~57.0.20",
