@@ -164,3 +164,18 @@ def test_10_delete_conversation_endpoint():
     assert res.status_code == 200
     assert res.json()["status"] == "deleted"
     assert not temp_dir.exists()
+
+def test_11_desktop_executable_locator():
+    """Testa se o localizador do executável do Antigravity encontra o executável no PC."""
+    from server.cdp_controller import cdp_controller
+    exe = cdp_controller.find_antigravity_executable()
+    assert exe is not None, "Executável do Antigravity deve ser localizado no computador"
+    assert exe.exists()
+
+def test_12_desktop_launch_endpoint():
+    """Testa o endpoint POST /api/desktop/launch que reporta status ou inicia o aplicativo no PC."""
+    res = client.post("/api/desktop/launch", headers=auth_headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] in ("already_running", "launched")
+    assert "message" in data

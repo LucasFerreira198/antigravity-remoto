@@ -290,9 +290,10 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     };
   }, []);
 
-  // Reconhecimento de Voz
+  // Reconhecimento de Voz Aprimorado
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const voiceBasePromptRef = useRef<string>('');
+  const voiceFinalizedSegmentsRef = useRef<string>('');
 
   useSpeechRecognitionEvent('start', () => {
     setIsRecordingVoice(true);
@@ -304,12 +305,37 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   });
 
   useSpeechRecognitionEvent('result', (event) => {
-    const recognizedText = event.results.map((r) => r.transcript).join(' ').trim();
-    if (recognizedText) {
-      const base = voiceBasePromptRef.current ? `${voiceBasePromptRef.current.trim()} ` : '';
-      const updatedPrompt = `${base}${recognizedText}`;
+    // Tomar SEMPRE a hipótese com maior confiança (index 0) para evitar duplicar/triplicar alternativas
+    const best = event.results && event.results.length > 0 ? (event.results[0]?.transcript || '').trim() : '';
+    if (!best) return;
+
+    const base = voiceBasePromptRef.current ? `${voiceBasePromptRef.current.trim()} ` : '';
+    const finalized = voiceFinalizedSegmentsRef.current.trim();
+    let currentSpeech = '';
+
+    if (event.isFinal) {
+      if (!finalized) {
+        currentSpeech = best;
+      } else if (best.toLowerCase().startsWith(finalized.toLowerCase())) {
+        currentSpeech = best;
+      } else {
+        currentSpeech = `${finalized} ${best}`.trim();
+      }
+      voiceFinalizedSegmentsRef.current = currentSpeech;
+      const updatedPrompt = `${base}${currentSpeech}`.trim();
       setInputPrompt(updatedPrompt);
       StorageService.saveDraft(conversation.id, updatedPrompt);
+    } else {
+      // Pré-visualização interim (em tempo real)
+      if (!finalized) {
+        currentSpeech = best;
+      } else if (best.toLowerCase().startsWith(finalized.toLowerCase())) {
+        currentSpeech = best;
+      } else {
+        currentSpeech = `${finalized} ${best}`.trim();
+      }
+      const updatedPrompt = `${base}${currentSpeech}`.trim();
+      setInputPrompt(updatedPrompt);
     }
   });
 
@@ -326,6 +352,13 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         ExpoSpeechRecognitionModule.stop();
         setIsRecordingVoice(false);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        const base = voiceBasePromptRef.current ? `${voiceBasePromptRef.current.trim()} ` : '';
+        const fin = voiceFinalizedSegmentsRef.current.trim();
+        if (fin) {
+          const finalPrompt = `${base}${fin}`.trim();
+          setInputPrompt(finalPrompt);
+          StorageService.saveDraft(conversation.id, finalPrompt);
+        }
         return;
       }
 
@@ -342,10 +375,18 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       }
 
       voiceBasePromptRef.current = inputPrompt;
+      voiceFinalizedSegmentsRef.current = '';
       ExpoSpeechRecognitionModule.start({
         lang: 'pt-BR',
         interimResults: true,
         continuous: true,
+        maxAlternatives: 1,
+        addsPunctuation: true,
+        contextualStrings: [
+          'Antigravity', 'Python', 'APK', 'React', 'TypeScript', 'Terminal', 'Git', 'GitHub',
+          'bug', 'erro', 'servidor', 'computador', 'código', 'projeto', 'chat', 'executar',
+          'iniciar', 'atualizar', 'conectar', 'abrir', 'fechar', 'tela', 'função'
+        ]
       });
       setIsRecordingVoice(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -355,6 +396,13 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
       Alert.alert('Erro ao iniciar microfone', err?.message || 'Não foi possível iniciar o reconhecimento de voz.');
     }
   };
+
+  // Status de inicialização automática do Antigravity no PC
+  const [desktopStatusNotice, setDesktopStatusNotice] = useState<{
+    text: string;
+    type: 'info' | 'success' | 'warning';
+  } | null>(null);
+  const desktopNoticeTimerRef = useRef<any>(null);
 
   // 1. Carregamento inicial (Cache instantâneo local + busca em rede + sync contínuo)
   useEffect(() => {
@@ -497,6 +545,32 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
   };
 
   const handleLiveEvent = (payload: any) => {
+    // 0. Status de inicialização do aplicativo desktop no PC
+    if (payload.event === 'desktop_status') {
+      if (desktopNoticeTimerRef.current) clearTimeout(desktopNoticeTimerRef.current);
+      const isSuccess = payload.status === 'sent' || payload.status === 'ready';
+      const isWarn = payload.status === 'warning' || payload.status === 'fallback';
+      setDesktopStatusNotice({
+        text: payload.message || 'Status do Antigravity no PC',
+        type: isSuccess ? 'success' : isWarn ? 'warning' : 'info',
+      });
+
+      if (payload.status === 'launching') {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      } else if (isSuccess) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else if (isWarn) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      }
+
+      if (payload.status === 'sent' || isWarn) {
+        desktopNoticeTimerRef.current = setTimeout(() => {
+          setDesktopStatusNotice(null);
+        }, 5000);
+      }
+      return;
+    }
+
     // 1. Histórico inicial
     if (payload.event === 'initial_history' && payload.messages) {
       setMessages(payload.messages);
@@ -629,7 +703,14 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
     }, 80);
 
     try {
-      await api.sendMessage(conversation.id, textToSend, undefined, imagePayload, filePayload);
+      const sendRes = await api.sendMessage(conversation.id, textToSend, undefined, imagePayload, filePayload);
+      if (sendRes && sendRes.desktop_auto_launched) {
+        setDesktopStatusNotice({
+          text: 'Antigravity aberto no PC e mensagem enviada com sucesso!',
+          type: 'success',
+        });
+        setTimeout(() => setDesktopStatusNotice(null), 4500);
+      }
       loadAuxData();
 
       // Polling de garantia enquanto o modelo responde
@@ -1610,6 +1691,36 @@ export default function ChatScreen({ conversation, onBack, onOpenArtifacts }: Ch
         </ScrollView>
       </View>
 
+      {/* Banner de Status do Antigravity no PC (Auto-Launch / Envio) */}
+      {desktopStatusNotice && (
+        <View
+          style={[
+            styles.desktopStatusBanner,
+            desktopStatusNotice.type === 'success' && styles.desktopStatusBannerSuccess,
+            desktopStatusNotice.type === 'warning' && styles.desktopStatusBannerWarning,
+            desktopStatusNotice.type === 'info' && styles.desktopStatusBannerInfo,
+          ]}
+        >
+          {desktopStatusNotice.type === 'info' ? (
+            <ActivityIndicator size="small" color="#38bdf8" style={{ marginRight: 8 }} />
+          ) : desktopStatusNotice.type === 'success' ? (
+            <CheckCircle2 size={16} color="#10b981" style={{ marginRight: 8 }} />
+          ) : (
+            <Laptop size={16} color="#f59e0b" style={{ marginRight: 8 }} />
+          )}
+          <Text
+            style={[
+              styles.desktopStatusText,
+              desktopStatusNotice.type === 'success' && styles.desktopStatusTextSuccess,
+              desktopStatusNotice.type === 'warning' && styles.desktopStatusTextWarning,
+            ]}
+            numberOfLines={2}
+          >
+            {desktopStatusNotice.text}
+          </Text>
+        </View>
+      )}
+
       {/* Banner de Reconhecimento de Voz Ativo */}
       {isRecordingVoice && (
         <View style={styles.voiceRecordingBanner}>
@@ -2562,6 +2673,40 @@ const styles = StyleSheet.create({
   },
   queuedRemoveBtn: {
     padding: 3,
+  },
+  desktopStatusBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    marginHorizontal: 12,
+    marginBottom: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  desktopStatusBannerInfo: {
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+  },
+  desktopStatusBannerSuccess: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  desktopStatusBannerWarning: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  desktopStatusText: {
+    fontSize: 12,
+    color: '#38bdf8',
+    fontWeight: '600',
+    flex: 1,
+  },
+  desktopStatusTextSuccess: {
+    color: '#10b981',
+  },
+  desktopStatusTextWarning: {
+    color: '#f59e0b',
   },
   voiceRecordingBanner: {
     flexDirection: 'row',

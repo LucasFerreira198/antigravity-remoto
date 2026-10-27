@@ -39,22 +39,31 @@ class ApiService {
       }
     }
 
-    const makeFetch = async (targetBase: string) => {
+    const makeFetch = async (targetBase: string, timeoutMs: number = 18000) => {
       const url = `${targetBase}${endpoint}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'X-API-Key': this.apiKey,
         'Authorization': `Bearer ${this.apiKey}`,
         ...(options.headers as Record<string, string> || {})
       };
-      return fetch(url, { ...options, headers });
+      try {
+        const res = await fetch(url, { ...options, headers, signal: controller.signal });
+        clearTimeout(timer);
+        return res;
+      } catch (err) {
+        clearTimeout(timer);
+        throw err;
+      }
     };
 
     let response: Response;
     try {
       response = await makeFetch(this.baseUrl);
     } catch (networkErr: any) {
-      // Se falhou por UnknownHostException ou queda de túnel, tentar auto-recuperar via Ponte Nuvem
+      // Se falhou por UnknownHostException, Timeout ou queda de túnel, tentar auto-recuperar via Ponte Nuvem
       if (this.apiKey && !this.isResolvingBridge) {
         this.isResolvingBridge = true;
         try {
@@ -83,6 +92,32 @@ class ApiService {
       }
     }
 
+    // Se a resposta retornou código de erro de túnel Cloudflare (502, 503, 520-530), tentar auto-resolver
+    if (!response.ok && [502, 503, 520, 521, 522, 523, 524, 530].includes(response.status)) {
+      if (this.apiKey && !this.isResolvingBridge) {
+        this.isResolvingBridge = true;
+        try {
+          const resolved = await BridgeResolver.resolveWorkingConnection(this.apiKey, undefined);
+          if (resolved.url && resolved.url !== this.baseUrl) {
+            this.baseUrl = resolved.url.replace(/\/+$/, '');
+            const saved = await StorageService.getConnection();
+            if (saved) {
+              await StorageService.saveConnection({
+                ...saved,
+                server_url: this.baseUrl,
+                is_connected: true
+              });
+            }
+            response = await makeFetch(this.baseUrl);
+          }
+        } catch (resolveErr) {
+          // prosseguir para lançar o erro se a resolução falhou
+        } finally {
+          this.isResolvingBridge = false;
+        }
+      }
+    }
+
     if (!response.ok) {
       let errorMsg = `Erro ${response.status}: ${response.statusText}`;
       try {
@@ -97,16 +132,29 @@ class ApiService {
 
   async testConnection(url: string, key: string): Promise<any> {
     const cleanUrl = url.replace(/\/+$/, '');
-    const res = await fetch(`${cleanUrl}/api/status`, {
-      headers: {
-        'X-API-Key': key,
-        'Authorization': `Bearer ${key}`
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    try {
+      const res = await fetch(`${cleanUrl}/api/status`, {
+        headers: {
+          'X-API-Key': key,
+          'Authorization': `Bearer ${key}`
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      if (!res.ok) {
+        throw new Error('Falha na autenticação. Verifique o Token ou a URL informada.');
       }
-    });
-    if (!res.ok) {
-      throw new Error('Falha na autenticação. Verifique o Token ou a URL informada.');
+      return res.json();
+    } catch (err: any) {
+      clearTimeout(timer);
+      throw err;
     }
-    return res.json();
+  }
+
+  async launchDesktop(): Promise<any> {
+    return this.request('/api/desktop/launch', { method: 'POST' });
   }
 
   async getStatus(): Promise<any> {

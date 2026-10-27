@@ -2,12 +2,64 @@ import json
 import urllib.request
 import websockets
 import asyncio
+import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 class CDPController:
     def __init__(self):
         self.devtools_port_file = Path.home() / "AppData" / "Roaming" / "antigravity" / "DevToolsActivePort"
+
+    @staticmethod
+    def find_antigravity_executable() -> Optional[Path]:
+        """Localiza o caminho do executável do Antigravity no computador."""
+        candidates = [
+            Path.home() / "AppData" / "Local" / "Programs" / "antigravity" / "Antigravity.exe",
+            Path.home() / "AppData" / "Local" / "Programs" / "Antigravity" / "Antigravity.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "antigravity" / "Antigravity.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Antigravity" / "Antigravity.exe",
+            Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "Antigravity" / "Antigravity.exe",
+            Path(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)")) / "Antigravity" / "Antigravity.exe",
+        ]
+        for c in candidates:
+            if c.exists() and c.is_file():
+                return c
+        return None
+
+    async def launch_desktop(self, timeout: float = 25.0) -> bool:
+        """Inicia o aplicativo desktop do Antigravity no PC caso esteja fechado e aguarda a inicialização do CDP."""
+        if await self.is_desktop_available():
+            return True
+
+        exe_path = self.find_antigravity_executable()
+        if not exe_path:
+            print("[CDP] Executável do Antigravity não encontrado no PC.")
+            return False
+
+        try:
+            print(f"[CDP] Iniciando Antigravity desktop: {exe_path}")
+            os.startfile(str(exe_path))
+        except Exception as e:
+            print(f"[CDP] Erro ao iniciar Antigravity via os.startfile: {e}")
+            try:
+                subprocess.Popen([str(exe_path)])
+            except Exception as e2:
+                print(f"[CDP] Erro ao iniciar Antigravity via subprocess: {e2}")
+                return False
+
+        # Aguardar inicialização e escrita do DevToolsActivePort
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            await asyncio.sleep(1.0)
+            if await self.is_desktop_available():
+                # Dar mais um breve momento para a interface web interna hidratar
+                await asyncio.sleep(1.5)
+                print("[CDP] Antigravity desktop iniciado e conectado via CDP com sucesso!")
+                return True
+
+        print(f"[CDP] Timeout de {timeout}s aguardando Antigravity desktop iniciar.")
+        return False
 
     def get_devtools_port(self) -> Optional[int]:
         if not self.devtools_port_file.exists():
@@ -101,6 +153,13 @@ class CDPController:
                 safe_prompt = json.dumps(prompt)
                 check_modal_expr = f"""
                 (async () => {{
+                    // Aguardar brevemente caso o modal ou input ainda esteja montando
+                    for (let i = 0; i < 15; i++) {{
+                        const ready = document.querySelector('[aria-label="Message input"], [placeholder="Message input"], [role="dialog"], [role="alertdialog"], button[data-testid="send-button"]');
+                        if (ready) break;
+                        await new Promise(r => setTimeout(r, 150));
+                    }}
+
                     // 1. Procurar botão de Submit da pergunta interativa na tela (sem exigir disabled=false inicialmente)
                     const allBtns = Array.from(document.querySelectorAll('button'));
                     const submitBtn = allBtns.find(b => {{

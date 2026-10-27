@@ -204,15 +204,15 @@ export const BridgeResolver = {
     const bridgeId = this.computeBridgeId(key);
     const cloudCandidates = await this.fetchCandidatesFromCloud(bridgeId);
 
-    // 3. Montar lista consolidada e sem duplicatas
+    // 3. Montar lista consolidada priorizando candidatos frescos da nuvem e rede local
     const allCandidates: string[] = [];
-    if (fallbackUrl && !allCandidates.includes(fallbackUrl)) {
-      allCandidates.push(fallbackUrl);
-    }
     for (const c of cloudCandidates) {
       if (c && !allCandidates.includes(c)) {
         allCandidates.push(c);
       }
+    }
+    if (fallbackUrl && !allCandidates.includes(fallbackUrl)) {
+      allCandidates.push(fallbackUrl);
     }
 
     if (allCandidates.length === 0) {

@@ -169,6 +169,18 @@ async def get_system_status():
         }
     }
 
+@app.post("/api/desktop/launch", dependencies=[Depends(verify_token)])
+async def launch_desktop_app():
+    """Inicia o aplicativo desktop do Antigravity no PC caso esteja fechado."""
+    if await cdp_controller.is_desktop_available():
+        return {"status": "already_running", "message": "Antigravity já está em execução no PC."}
+
+    success = await cdp_controller.launch_desktop(timeout=25.0)
+    if success:
+        return {"status": "launched", "message": "Antigravity aberto no PC com sucesso."}
+    else:
+        raise HTTPException(status_code=500, detail="Não foi possível iniciar o Antigravity no PC.")
+
 @app.get("/api/conversations", dependencies=[Depends(verify_token)])
 def list_conversations(limit: int = 50, project_id: Optional[str] = None):
     return service.list_conversations(limit=limit, project_id=project_id)
@@ -197,13 +209,21 @@ async def get_conversation(conversation_id: str):
 @app.post("/api/conversations/new", dependencies=[Depends(verify_token)])
 async def create_conversation(req: NewConversationRequest):
     """Cria nova conversa diretamente no desktop via CDP ou fallback agy.exe."""
-    # 1. Tentar via CDP se desktop estiver ativo
-    if await cdp_controller.is_desktop_available():
+    # 1. Tentar via CDP se desktop estiver ativo (ou iniciar automaticamente se estiver fechado)
+    desktop_ready = await cdp_controller.is_desktop_available()
+    auto_launched = False
+    if not desktop_ready:
+        print("[Main] create_conversation: Antigravity fechado. Iniciando automaticamente no PC...")
+        desktop_ready = await cdp_controller.launch_desktop(timeout=22.0)
+        auto_launched = desktop_ready
+
+    if desktop_ready:
         new_cid = await cdp_controller.create_conversation_on_desktop(req.prompt, req.project_id)
         if new_cid:
             return {
                 "status": "created_desktop",
                 "conversation_id": new_cid,
+                "desktop_auto_launched": auto_launched,
                 "model": req.model or "desktop"
             }
 
@@ -291,13 +311,57 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
             print(f"Erro ao salvar imagem anexada: {e}")
 
     # 1. Enviar diretamente para a janela do PC via CDP (executa na tela do PC)
-    if await cdp_controller.is_desktop_available():
+    desktop_ready = await cdp_controller.is_desktop_available()
+    auto_launched = False
+
+    if not desktop_ready:
+        # Avisar ao APK imediatamente via WebSocket que o Antigravity está fechado no PC e sendo iniciado
+        broadcast_to_conversation(
+            conversation_id,
+            {
+                "event": "desktop_status",
+                "status": "launching",
+                "message": "Antigravity fechado no PC. Abrindo aplicativo automaticamente..."
+            }
+        )
+        print(f"[Main] Antigravity desktop fechado. Iniciando automaticamente no PC...")
+        desktop_ready = await cdp_controller.launch_desktop(timeout=22.0)
+        if desktop_ready:
+            auto_launched = True
+            broadcast_to_conversation(
+                conversation_id,
+                {
+                    "event": "desktop_status",
+                    "status": "ready",
+                    "message": "Antigravity aberto no PC! Entregando sua mensagem..."
+                }
+            )
+        else:
+            broadcast_to_conversation(
+                conversation_id,
+                {
+                    "event": "desktop_status",
+                    "status": "fallback",
+                    "message": "Não foi possível abrir o Antigravity desktop a tempo. Executando via agy CLI..."
+                }
+            )
+
+    if desktop_ready:
         success = await cdp_controller.send_message_to_desktop(conversation_id, prompt_to_send, file_path=file_path)
         if success:
+            broadcast_to_conversation(
+                conversation_id,
+                {
+                    "event": "desktop_status",
+                    "status": "sent",
+                    "message": "Antigravity aberto no PC e mensagem enviada no chat com sucesso!" if auto_launched else "Mensagem enviada no chat do PC com sucesso!"
+                }
+            )
             return {
                 "status": "executing_desktop",
                 "conversation_id": conversation_id,
                 "channel": "cdp",
+                "desktop_auto_launched": auto_launched,
                 "has_attachment": bool(file_path)
             }
 
