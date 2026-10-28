@@ -54,13 +54,13 @@ class AntigravityService:
         """Extrai anexo (imagem ou arquivo genérico como APK) embutido no texto da mensagem."""
         if not text:
             return "", None
-        m_img = re.search(r'!\[Imagem anexada:\s*([^\]]+)\]\(([^)]+)\)', text)
+        m_img = re.search(r'!\[(?:Imagem|Imagem anexada):\s*([^\]]+)\]\(([^)]+)\)', text)
         if m_img:
-            clean = re.sub(r'!\[Imagem anexada:[^\]]+\]\([^)]+\)', '', text).strip()
+            clean = re.sub(r'!\[(?:Imagem|Imagem anexada):[^\]]+\]\([^)]+\)', '', text).strip()
             return clean, {"name": m_img.group(1).strip(), "isImage": True, "uri": m_img.group(2).strip()}
-        m_file = re.search(r'\[Arquivo anexado:\s*([^\]]+)\]\(([^)]+)\)', text)
+        m_file = re.search(r'\[(?:Arquivo|Arquivo anexado):\s*([^\]]+)\]\(([^)]+)\)', text)
         if m_file:
-            clean = re.sub(r'\[Arquivo anexado:[^\]]+\]\([^)]+\)', '', text).strip()
+            clean = re.sub(r'\[(?:Arquivo|Arquivo anexado):[^\]]+\]\([^)]+\)', '', text).strip()
             return clean, {"name": m_file.group(1).strip(), "isImage": False, "uri": m_file.group(2).strip()}
         return text, None
 
@@ -121,18 +121,32 @@ class AntigravityService:
             conn.close()
 
     def delete_conversation(self, conversation_id: str) -> bool:
-        """Exclui conversa do banco SQLite e do diretório brain."""
+        """Exclui conversa do banco SQLite e do diretório brain de forma segura."""
         try:
+            clean_cid = os.path.basename(conversation_id).strip()
+            if not clean_cid:
+                return False
+
             if self.paths.CONVERSATION_SUMMARIES_DB.exists():
                 conn = sqlite3.connect(str(self.paths.CONVERSATION_SUMMARIES_DB))
                 try:
                     c = conn.cursor()
-                    c.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (conversation_id,))
+                    c.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (clean_cid,))
                     conn.commit()
                 finally:
                     conn.close()
-            brain_dir = self.paths.BRAIN_DIR / conversation_id
-            if brain_dir.exists():
+
+            # Excluir banco de dados SQLite individual da conversa e WALs para não deixar arquivos órfãos
+            if self.paths.CONVERSATIONS_DIR.exists():
+                for ext in (".db", ".db-wal", ".db-shm"):
+                    orphan_file = self.paths.CONVERSATIONS_DIR / f"{clean_cid}{ext}"
+                    try:
+                        orphan_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            brain_dir = (self.paths.BRAIN_DIR / clean_cid).resolve()
+            if brain_dir.exists() and brain_dir.is_relative_to(self.paths.BRAIN_DIR.resolve()):
                 import shutil
                 shutil.rmtree(brain_dir, ignore_errors=True)
             return True
@@ -289,8 +303,8 @@ class AntigravityService:
                 target_lines = []
                 file_size = transcript_file.stat().st_size
                 with open(transcript_file, "rb") as f:
-                    # Leitura ultra-rápida: ler os últimos 400KB do arquivo (tempo de busca ~2ms em vez de 35ms)
-                    seek_pos = max(0, file_size - 400_000)
+                    # Leitura de alta performance: lê integralmente arquivos de até 3MB, garantindo histórico completo
+                    seek_pos = max(0, file_size - 3_000_000)
                     f.seek(seek_pos)
                     if seek_pos > 0:
                         f.readline()  # descartar linha parcial
@@ -727,20 +741,35 @@ class AntigravityService:
         return projects
 
     def create_project(self, name: str, folder_path: str) -> Dict[str, Any]:
-        """Cria novo projeto e pasta."""
-        path_obj = Path(folder_path)
-        path_obj.mkdir(parents=True, exist_ok=True)
+        """Cria novo projeto e pasta com validação de caminho."""
+        clean_name = (name or "").strip()
+        clean_folder = (folder_path or "").strip()
+        if not clean_name:
+            raise ValueError("O nome do projeto não pode ser vazio.")
+        if not clean_folder:
+            raise ValueError("O caminho da pasta não pode ser vazio.")
+
+        # Validar caracteres proibidos no Windows (exceto : para letras de unidade como C:\)
+        invalid_chars = set('<>"|?*')
+        if any(c in invalid_chars for c in clean_folder):
+            raise ValueError("O caminho da pasta contém caracteres inválidos.")
+
+        try:
+            path_obj = Path(clean_folder).resolve()
+            path_obj.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise ValueError(f"Não foi possível acessar ou criar o diretório: {e}")
         
         project_id = str(uuid.uuid4())
         import urllib.parse
-        clean_path = str(path_obj.resolve()).replace("\\", "/")
+        clean_path = str(path_obj).replace("\\", "/")
         if not clean_path.startswith("/"):
             clean_path = "/" + clean_path
         uri = f"file://{urllib.parse.quote(clean_path, safe='/:')}"
 
         project_data = {
             "id": project_id,
-            "name": name,
+            "name": clean_name,
             "projectResources": {
                 "resources": [
                     {
@@ -1073,24 +1102,32 @@ class AntigravityService:
         return result
 
     def stop_background_task(self, conversation_id: str, task_id: str) -> bool:
-        """Encerra um processo em segundo plano de forma segura e eficaz."""
+        """Encerra um processo em segundo plano de forma segura contra command injection."""
         try:
+            # Sanitização estrita: apenas identificadores alfanuméricos e hífens são aceitos
+            clean_task_id = re.sub(r"[^a-zA-Z0-9_\-]", "", task_id).strip()
+            if not clean_task_id:
+                return False
+
             stopped = False
             for p in psutil.process_iter(['pid', 'name']):
                 try:
                     cmd_list = p.cmdline() if p.is_running() else []
                     cmd_str = ' '.join(cmd_list).lower()
-                    if task_id in cmd_str or (task_id.startswith("task-") and "uvicorn" in cmd_str) or ("server.main:app" in cmd_str and "8765" in cmd_str):
+                    if clean_task_id in cmd_str or (clean_task_id.startswith("task-") and "uvicorn" in cmd_str) or ("server.main:app" in cmd_str and "8765" in cmd_str):
                         p.terminate()
                         stopped = True
-                    elif task_id in ("cloudflared", "cloudflare-tunnel") and "cloudflared" in p.name().lower():
+                    elif clean_task_id in ("cloudflared", "cloudflare-tunnel") and "cloudflared" in p.name().lower() and "8765" in cmd_str:
                         p.terminate()
                         stopped = True
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
+
             if not stopped:
+                # Usar psutil diretamente é mais seguro; se precisar de fallback, clean_task_id já está 100% sanitizado
+                ps_script = f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{clean_task_id}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"
                 subprocess.run(
-                    ["powershell", "-Command", f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{task_id}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"],
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
                     timeout=5
                 )
             return True
@@ -1164,6 +1201,7 @@ class AntigravityService:
             (self.paths.CONFIG_DIR / "plugins" / "chrome-devtools-plugin" / "skills", "Chrome DevTools"),
             (self.paths.CONFIG_DIR / "plugins" / "firebase" / "skills", "Firebase"),
             (self.paths.CONFIG_DIR / "plugins" / "gemini-api" / "skills", "Gemini AI"),
+            (self.paths.CONFIG_DIR / "skills", "Community"),
             (Path.home() / ".agents" / "skills", "Community"),
             (Path.home() / ".agent" / "skills", "Community"),
         ]

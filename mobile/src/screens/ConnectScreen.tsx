@@ -84,6 +84,16 @@ export default function ConnectScreen({ onConnected }: ConnectScreenProps) {
 
   const handleConnect = async (urlToUse?: string, keyToUse?: string) => {
     let url = (urlToUse || serverUrl).trim();
+    if (url) {
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        if (url.includes('trycloudflare') || url.includes('.com') || url.includes('.io')) {
+          url = `https://${url}`;
+        } else {
+          url = `http://${url}`;
+        }
+      }
+      url = url.replace(/\/+$/, '');
+    }
     const key = (keyToUse || apiKey).trim();
 
     if (!url && !key) {

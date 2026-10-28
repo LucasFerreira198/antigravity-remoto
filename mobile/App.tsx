@@ -140,9 +140,8 @@ export default function App() {
         return true;
       }
       if (currentScreen === 'chat') {
-        setSelectedConversation(null);
-        setCurrentScreen('conversations');
-        return true;
+        // ChatScreen possui seu próprio BackHandler para fechar modais internos antes de sair da conversa
+        return false;
       }
       if (currentScreen === 'projects' || currentScreen === 'settings' || currentScreen === 'connect') {
         setCurrentScreen('conversations');
@@ -173,7 +172,7 @@ export default function App() {
           activeConversationsRef.current[c.id] = !!c.is_active;
         }
       } catch (e) {}
-    }, 1200);
+    }, 5000);
 
     return () => clearInterval(monitorInterval);
   }, [isConnected, currentScreen, selectedConversation?.id]);

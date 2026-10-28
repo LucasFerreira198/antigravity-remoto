@@ -5,11 +5,13 @@ import asyncio
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
 
 class CDPController:
     def __init__(self):
         self.devtools_port_file = Path.home() / "AppData" / "Roaming" / "antigravity" / "DevToolsActivePort"
+        self._lock = asyncio.Lock()
 
     @staticmethod
     def find_antigravity_executable() -> Optional[Path]:
@@ -53,7 +55,6 @@ class CDPController:
         while asyncio.get_event_loop().time() - start_time < timeout:
             await asyncio.sleep(1.0)
             if await self.is_desktop_available():
-                # Dar mais um breve momento para a interface web interna hidratar
                 await asyncio.sleep(1.5)
                 print("[CDP] Antigravity desktop iniciado e conectado via CDP com sucesso!")
                 return True
@@ -93,6 +94,47 @@ class CDPController:
         ws_url = await self.get_page_ws_url(port)
         return bool(ws_url)
 
+    @asynccontextmanager
+    async def cdp_session(self, max_size: int = 20 * 1024 * 1024, close_timeout: float = 5.0):
+        """Gerenciador de contexto reutilizável para conexão WebSocket com o DevTools do Antigravity."""
+        port = self.get_devtools_port()
+        if not port:
+            yield None
+            return
+
+        ws_url = await self.get_page_ws_url(port)
+        if not ws_url:
+            yield None
+            return
+
+        try:
+            async with websockets.connect(ws_url, max_size=max_size, close_timeout=close_timeout, origin=None) as ws:
+                yield ws
+        except Exception as e:
+            print(f"[CDP Controller] Erro de conexão WebSocket: {e}")
+            yield None
+
+    @staticmethod
+    async def cdp_call(ws, method: str, params: Optional[Dict[str, Any]] = None, msg_id: int = 1, timeout: float = 8.0) -> Dict[str, Any]:
+        """Executa chamada CDP via WebSocket com proteção estrita de timeout (evita travamento do servidor)."""
+        if not ws:
+            return {}
+        try:
+            await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+            start_t = asyncio.get_event_loop().time()
+            while asyncio.get_event_loop().time() - start_t < timeout:
+                remaining = max(0.5, timeout - (asyncio.get_event_loop().time() - start_t))
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                    msg = json.loads(raw)
+                    if msg.get("id") == msg_id:
+                        return msg
+                except asyncio.TimeoutError:
+                    break
+        except Exception as e:
+            print(f"[CDP] Erro na chamada {method}: {e}")
+        return {}
+
     async def send_message_to_desktop(
         self,
         conversation_id: str,
@@ -100,212 +142,194 @@ class CDPController:
         file_path: Optional[str] = None,
         file_paths: Optional[List[str]] = None
     ) -> bool:
-        """Digita e envia a mensagem diretamente na janela ativa do Antigravity no PC, com suporte a múltiplos anexos."""
-        port = self.get_devtools_port()
-        if not port:
-            return False
+        """Digita e envia a mensagem diretamente na janela ativa do Antigravity no PC, com suporte a múltiplos anexos de imagem."""
+        async with self._lock:
+            async with self.cdp_session(max_size=20 * 1024 * 1024, close_timeout=5.0) as ws:
+                if not ws:
+                    return False
 
-        ws_url = await self.get_page_ws_url(port)
-        if not ws_url:
-            return False
+                try:
+                    cdp_call = lambda method, params=None, msg_id=1: self.cdp_call(ws, method, params, msg_id, timeout=8.0)
 
-        try:
-            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, close_timeout=5, origin=None) as ws:
-                async def cdp_call(method, params=None, msg_id=1):
-                    await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
-                    while True:
-                        msg = json.loads(await ws.recv())
-                        if msg.get("id") == msg_id:
-                            return msg
+                    # 1. Trocar para a conversa desejada se a tela estiver em outra, com sanitização de strings contra JS Injection
+                    safe_cid = json.dumps(conversation_id)
+                    nav_expr = f"""
+                    (() => {{
+                        const targetCid = {safe_cid};
+                        if (!window.location.pathname.includes(targetCid)) {{
+                            const link = document.querySelector(`a[href*="${{CSS.escape(targetCid)}}"]`);
+                            if (link) {{
+                                link.click();
+                                return 'clicked_link';
+                            }} else {{
+                                window.location.href = `/c/${{encodeURIComponent(targetCid)}}`;
+                                return 'navigated_url';
+                            }}
+                        }}
+                        return 'already_here';
+                    }})()
+                    """
+                    res1 = await cdp_call("Runtime.evaluate", {"expression": nav_expr, "returnByValue": True}, msg_id=1)
+                    nav_result = res1.get("result", {}).get("result", {}).get("value")
+                    if nav_result in ("clicked_link", "navigated_url"):
+                        await asyncio.sleep(0.8)
 
-                # 1. Trocar para a conversa desejada se a tela estiver em outra
-                nav_expr = f"""
-                (() => {{
-                    if (!window.location.pathname.includes('{conversation_id}')) {{
-                        const link = document.querySelector('a[href*="{conversation_id}"]');
-                        if (link) {{
-                            link.click();
-                            return 'clicked_link';
+                    # 2. Se houver anexo(s) de imagem, injetar no input file (APENAS imagens reais .png, .jpg, .jpeg, .webp)
+                    valid_image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+                    all_files_to_inject = []
+                    candidates = list(file_paths or []) + ([file_path] if file_path else [])
+                    for fp in candidates:
+                        if fp and Path(fp).exists() and Path(fp).suffix.lower() in valid_image_exts:
+                            resolved = str(Path(fp).resolve())
+                            if resolved not in all_files_to_inject:
+                                all_files_to_inject.append(resolved)
+
+                    if all_files_to_inject:
+                        try:
+                            await cdp_call("DOM.enable", {}, msg_id=10)
+                            doc_res = await cdp_call("DOM.getDocument", {"depth": -1}, msg_id=11)
+                            root_id = doc_res.get("result", {}).get("root", {}).get("nodeId")
+                            if root_id:
+                                q_res = await cdp_call("DOM.querySelector", {"nodeId": root_id, "selector": 'input[type="file"]'}, msg_id=12)
+                                file_node_id = q_res.get("result", {}).get("nodeId")
+                                if file_node_id:
+                                    await cdp_call("DOM.setFileInputFiles", {"files": all_files_to_inject, "nodeId": file_node_id}, msg_id=13)
+                                    await asyncio.sleep(0.5)
+                        except Exception as e:
+                            print(f"[CDP] Erro ao injetar arquivos de imagem: {e}")
+
+                    # 2.5 Verificar se há um modal de pergunta interativa aberto no desktop (ask_question)
+                    safe_prompt = json.dumps(prompt)
+                    check_modal_expr = f"""
+                    (async () => {{
+                        for (let i = 0; i < 15; i++) {{
+                            const ready = document.querySelector('[aria-label="Message input"], [placeholder="Message input"], [role="dialog"], [role="alertdialog"], button[data-testid="send-button"]');
+                            if (ready) break;
+                            await new Promise(r => setTimeout(r, 150));
+                        }}
+
+                        const allBtns = Array.from(document.querySelectorAll('button'));
+                        const submitBtn = allBtns.find(b => {{
+                            const t = (b.innerText || b.getAttribute('aria-label') || '').trim().toLowerCase();
+                            return t === 'submit' || t.includes('submit') || t === 'confirmar';
+                        }});
+
+                        const modal = document.querySelector('[role="dialog"], [role="alertdialog"], div[data-state="open"], div[class*="modal"]') || 
+                                      (submitBtn ? (submitBtn.closest('div[class*="card"], div[class*="dialog"]') || submitBtn.parentElement.parentElement) : null);
+                        
+                        if (!submitBtn && !modal) return 'no_modal';
+                        
+                        const container = modal || document.body;
+                        const answerText = {safe_prompt}.trim().toLowerCase();
+                        
+                        const allClickables = Array.from(container.querySelectorAll('button, label, [role="radio"], [role="checkbox"], div[class*="option"], div[class*="item"], div[class*="choice"], span'));
+                        let clicked = false;
+                        for (const el of allClickables) {{
+                            if (el === submitBtn) continue;
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            if (t && (t === answerText || t.includes(answerText) || answerText.includes(t))) {{
+                                el.click();
+                                clicked = true;
+                                break;
+                            }}
+                        }}
+
+                        const input = container.querySelector('input[type="text"], textarea');
+                        if (!clicked && input) {{
+                            input.focus();
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('insertText', false, {safe_prompt});
+                            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+
+                        await new Promise(r => setTimeout(r, 200));
+
+                        if (submitBtn) {{
+                            submitBtn.disabled = false;
+                            submitBtn.click();
                         }} else {{
-                            window.location.href = '/c/{conversation_id}';
-                            return 'navigated_url';
+                            const fallbackSubmit = Array.from(container.querySelectorAll('button')).find(b => {{
+                                const t = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
+                                return t.includes('submit') || t.includes('confirm') || b.type === 'submit';
+                            }});
+                            if (fallbackSubmit) {{
+                                fallbackSubmit.disabled = false;
+                                fallbackSubmit.click();
+                            }}
                         }}
-                    }}
-                    return 'already_here';
-                }})()
-                """
-                res1 = await cdp_call("Runtime.evaluate", {"expression": nav_expr, "returnByValue": True}, msg_id=1)
-                nav_result = res1.get("result", {}).get("result", {}).get("value")
-                if nav_result in ("clicked_link", "navigated_url"):
-                    await asyncio.sleep(0.8)
 
-                # 2. Se houver anexo(s) de imagem / arquivo, injetar no input file
-                all_files_to_inject = []
-                if file_paths:
-                    for fp in file_paths:
-                        if fp and Path(fp).exists():
-                            all_files_to_inject.append(str(Path(fp).resolve()))
-                elif file_path and Path(file_path).exists():
-                    all_files_to_inject.append(str(Path(file_path).resolve()))
+                        return 'modal_answered';
+                    }})()
+                    """
+                    modal_res = await cdp_call("Runtime.evaluate", {"expression": check_modal_expr, "returnByValue": True, "awaitPromise": True}, msg_id=20)
+                    if modal_res.get("result", {}).get("result", {}).get("value") == "modal_answered":
+                        await asyncio.sleep(0.5)
+                        return True
 
-                if all_files_to_inject:
-                    try:
-                        await cdp_call("DOM.enable", {}, msg_id=10)
-                        doc_res = await cdp_call("DOM.getDocument", {"depth": -1}, msg_id=11)
-                        root_id = doc_res.get("result", {}).get("root", {}).get("nodeId")
-                        if root_id:
-                            q_res = await cdp_call("DOM.querySelector", {"nodeId": root_id, "selector": 'input[type="file"]'}, msg_id=12)
-                            file_node_id = q_res.get("result", {}).get("nodeId")
-                            if file_node_id:
-                                await cdp_call("DOM.setFileInputFiles", {"files": all_files_to_inject, "nodeId": file_node_id}, msg_id=13)
-                                await asyncio.sleep(0.5)
-                    except Exception as e:
-                        print(f"[CDP] Erro ao injetar arquivos: {e}")
-
-                # 2.5 Verificar se há um modal de pergunta interativa aberto no desktop (ask_question)
-                safe_prompt = json.dumps(prompt)
-                check_modal_expr = f"""
-                (async () => {{
-                    // Aguardar brevemente caso o modal ou input ainda esteja montando
-                    for (let i = 0; i < 15; i++) {{
-                        const ready = document.querySelector('[aria-label="Message input"], [placeholder="Message input"], [role="dialog"], [role="alertdialog"], button[data-testid="send-button"]');
-                        if (ready) break;
-                        await new Promise(r => setTimeout(r, 150));
-                    }}
-
-                    // 1. Procurar botão de Submit da pergunta interativa na tela (sem exigir disabled=false inicialmente)
-                    const allBtns = Array.from(document.querySelectorAll('button'));
-                    const submitBtn = allBtns.find(b => {{
-                        const t = (b.innerText || b.getAttribute('aria-label') || '').trim().toLowerCase();
-                        return t === 'submit' || t.includes('submit') || t === 'confirmar';
-                    }});
-
-                    const modal = document.querySelector('[role="dialog"], [role="alertdialog"], div[data-state="open"], div[class*="modal"]') || 
-                                  (submitBtn ? (submitBtn.closest('div[class*="card"], div[class*="dialog"]') || submitBtn.parentElement.parentElement) : null);
-                    
-                    if (!submitBtn && !modal) return 'no_modal';
-                    
-                    const container = modal || document.body;
-                    const answerText = {safe_prompt}.trim().toLowerCase();
-                    
-                    // A. Procurar opção selecionável com texto correspondente
-                    const allClickables = Array.from(container.querySelectorAll('button, label, [role="radio"], [role="checkbox"], div[class*="option"], div[class*="item"], div[class*="choice"], span'));
-                    let clicked = false;
-                    for (const el of allClickables) {{
-                        if (el === submitBtn) continue;
-                        const t = (el.innerText || '').trim().toLowerCase();
-                        if (t && (t === answerText || t.includes(answerText) || answerText.includes(t))) {{
-                            el.click();
-                            clicked = true;
-                            break;
-                        }}
-                    }}
-
-                    // B. Se não encontrou opção ou se for texto customizado, preencher o campo de texto/textarea do modal
-                    const input = container.querySelector('input[type="text"], textarea');
-                    if (!clicked && input) {{
-                        input.focus();
+                    # 3. Focar o campo de texto e inserir o conteúdo
+                    focus_insert_expr = f"""
+                    (() => {{
+                        const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
+                        if (!el) return false;
+                        el.focus();
                         document.execCommand('selectAll', false, null);
                         document.execCommand('insertText', false, {safe_prompt});
-                        input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }}
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return true;
+                    }})()
+                    """
+                    res2 = await cdp_call("Runtime.evaluate", {"expression": focus_insert_expr, "returnByValue": True}, msg_id=2)
+                    inserted = res2.get("result", {}).get("result", {}).get("value")
 
-                    await new Promise(r => setTimeout(r, 200));
+                    if not inserted:
+                        await cdp_call("Input.insertText", {"text": prompt}, msg_id=3)
 
-                    // C. Clicar no botão Submit
-                    if (submitBtn) {{
-                        submitBtn.disabled = false;
-                        submitBtn.click();
-                    }} else {{
-                        const fallbackSubmit = Array.from(container.querySelectorAll('button')).find(b => {{
-                            const t = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
-                            return t.includes('submit') || t.includes('confirm') || b.type === 'submit';
-                        }});
-                        if (fallbackSubmit) {{
-                            fallbackSubmit.disabled = false;
-                            fallbackSubmit.click();
-                        }}
-                    }}
+                    await asyncio.sleep(0.3)
 
-                    return 'modal_answered';
-                }})()
-                """
-                modal_res = await cdp_call("Runtime.evaluate", {"expression": check_modal_expr, "returnByValue": True, "awaitPromise": True}, msg_id=20)
-                if modal_res.get("result", {}).get("result", {}).get("value") == "modal_answered":
-                    await asyncio.sleep(0.5)
+                    # 4. Enviar mensagem (clicar no botão Send ou disparar tecla Enter nativa)
+                    submit_expr = """
+                    (() => {
+                        const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"], button[aria-label^="Send"]');
+                        if (btn && !btn.disabled) {
+                            btn.click();
+                            return 'clicked_button';
+                        }
+                        return 'need_enter';
+                    })()
+                    """
+                    res4 = await cdp_call("Runtime.evaluate", {"expression": submit_expr, "returnByValue": True}, msg_id=4)
+                    sub_res = res4.get("result", {}).get("result", {}).get("value")
+
+                    if sub_res != 'clicked_button':
+                        await cdp_call("Input.dispatchKeyEvent", {
+                            "type": "rawKeyDown",
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                            "text": "\r"
+                        }, msg_id=5)
+                        await cdp_call("Input.dispatchKeyEvent", {
+                            "type": "keyUp",
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13
+                        }, msg_id=6)
+
                     return True
-
-                # 3. Focar o campo de texto e inserir o conteúdo
-                safe_prompt = json.dumps(prompt)
-                focus_insert_expr = f"""
-                (() => {{
-                    const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
-                    if (!el) return false;
-                    el.focus();
-                    document.execCommand('selectAll', false, null);
-                    document.execCommand('insertText', false, {safe_prompt});
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    return true;
-                }})()
-                """
-                res2 = await cdp_call("Runtime.evaluate", {"expression": focus_insert_expr, "returnByValue": True}, msg_id=2)
-                inserted = res2.get("result", {}).get("result", {}).get("value")
-
-                if not inserted:
-                    # Fallback para Input.insertText via CDP
-                    await cdp_call("Input.insertText", {"text": prompt}, msg_id=3)
-
-                await asyncio.sleep(0.3)
-
-                # 4. Enviar mensagem (clicar no botão Send ou disparar tecla Enter nativa)
-                submit_expr = """
-                (() => {
-                    const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"], button[aria-label^="Send"]');
-                    if (btn && !btn.disabled) {
-                        btn.click();
-                        return 'clicked_button';
-                    }
-                    return 'need_enter';
-                })()
-                """
-                res4 = await cdp_call("Runtime.evaluate", {"expression": submit_expr, "returnByValue": True}, msg_id=4)
-                sub_res = res4.get("result", {}).get("result", {}).get("value")
-
-                if sub_res != 'clicked_button':
-                    # Fallback para tecla Enter via eventos nativos de teclado CDP
-                    await cdp_call("Input.dispatchKeyEvent", {
-                        "type": "rawKeyDown",
-                        "key": "Enter",
-                        "code": "Enter",
-                        "windowsVirtualKeyCode": 13,
-                        "nativeVirtualKeyCode": 13,
-                        "text": "\r"
-                    }, msg_id=5)
-                    await cdp_call("Input.dispatchKeyEvent", {
-                        "type": "keyUp",
-                        "key": "Enter",
-                        "code": "Enter",
-                        "windowsVirtualKeyCode": 13,
-                        "nativeVirtualKeyCode": 13
-                    }, msg_id=6)
-
-                return True
-        except Exception as e:
-            print(f"[CDP Controller] Erro ao enviar mensagem para desktop: {e}")
-            return False
+                except Exception as e:
+                    print(f"[CDP Controller] Erro ao enviar mensagem para desktop: {e}")
+                    return False
 
     async def get_desktop_pending_text(self, conversation_id: str) -> Optional[str]:
         """Obtém o texto que está digitado no campo de mensagem do desktop aguardando envio."""
-        port = self.get_devtools_port()
-        if not port:
-            return None
-        ws_url = await self.get_page_ws_url(port)
-        if not ws_url:
-            return None
-        try:
-            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=3, origin=None) as ws:
+        async with self.cdp_session(max_size=5 * 1024 * 1024, close_timeout=3.0) as ws:
+            if not ws:
+                return None
+            try:
                 expr = """
                 (() => {
                     const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
@@ -315,124 +339,110 @@ class CDPController:
                     return '';
                 })()
                 """
-                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": expr, "returnByValue": True}}))
-                res = json.loads(await ws.recv())
+                res = await self.cdp_call(ws, "Runtime.evaluate", {"expression": expr, "returnByValue": True}, msg_id=1, timeout=3.0)
                 return res.get("result", {}).get("result", {}).get("value") or ""
-        except Exception:
-            return None
+            except Exception:
+                return None
 
     async def create_conversation_on_desktop(self, prompt: str, project_id: Optional[str] = None) -> Optional[str]:
         """Cria nova conversa na janela do PC no projeto selecionado (ou raiz)."""
-        port = self.get_devtools_port()
-        if not port:
-            return None
+        async with self._lock:
+            async with self.cdp_session(max_size=20 * 1024 * 1024, close_timeout=5.0) as ws:
+                if not ws:
+                    return None
 
-        ws_url = await self.get_page_ws_url(port)
-        if not ws_url:
-            return None
+                try:
+                    cdp_call = lambda method, params=None, msg_id=1: self.cdp_call(ws, method, params, msg_id, timeout=8.0)
 
-        try:
-            async with websockets.connect(ws_url, max_size=20 * 1024 * 1024, close_timeout=5, origin=None) as ws:
-                async def cdp_call(method, params=None, msg_id=1):
-                    await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
-                    while True:
-                        msg = json.loads(await ws.recv())
-                        if msg.get("id") == msg_id:
-                            return msg
-
-                # 1. Navegar para novo chat no projeto selecionado ou home
-                safe_pid = json.dumps(project_id or "")
-                new_chat_expr = f"""
-                (() => {{
-                    const pid = {safe_pid};
-                    if (pid) {{
-                        const projLink = document.querySelector(`a[href*="section=${{pid}}"], a[href="/?section=${{pid}}"]`);
-                        if (projLink) {{
-                            projLink.click();
-                            return 'clicked_proj_link';
-                        }} else {{
-                            window.location.href = `/?section=${{pid}}`;
-                            return 'navigated_proj_section';
+                    # 1. Navegar para novo chat no projeto selecionado ou home
+                    safe_pid = json.dumps(project_id or "")
+                    new_chat_expr = f"""
+                    (() => {{
+                        const pid = {safe_pid};
+                        if (pid) {{
+                            const projLink = document.querySelector(`a[href*="section=${{pid}}"], a[href="/?section=${{pid}}"]`);
+                            if (projLink) {{
+                                projLink.click();
+                                return 'clicked_proj_link';
+                            }} else {{
+                                window.location.href = `/?section=${{pid}}`;
+                                return 'navigated_proj_section';
+                            }}
                         }}
-                    }}
-                    const newBtn = document.querySelector('button[aria-label="New Conversation"], a[href="/"], button[data-testid="new-conversation-button"]');
-                    if (newBtn) {{
-                        newBtn.click();
-                        return 'clicked_new';
-                    }} else {{
-                        window.location.href = '/';
-                        return 'navigated_root';
-                    }}
-                }})()
-                """
-                await cdp_call("Runtime.evaluate", {"expression": new_chat_expr, "returnByValue": True}, msg_id=1)
-                await asyncio.sleep(1.0)
+                        const newBtn = document.querySelector('button[aria-label="New Conversation"], a[href="/"], button[data-testid="new-conversation-button"]');
+                        if (newBtn) {{
+                            newBtn.click();
+                            return 'clicked_new';
+                        }} else {{
+                            window.location.href = '/';
+                            return 'navigated_root';
+                        }}
+                    }})()
+                    """
+                    await cdp_call("Runtime.evaluate", {"expression": new_chat_expr, "returnByValue": True}, msg_id=1)
+                    await asyncio.sleep(1.0)
 
-                # 2. Digitar e enviar o prompt
-                safe_prompt = json.dumps(prompt)
-                type_expr = f"""
-                (() => {{
-                    const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
-                    if (!el) return false;
-                    el.focus();
-                    document.execCommand('selectAll', false, null);
-                    document.execCommand('insertText', false, {safe_prompt});
-                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    
-                    const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"]');
-                    if (btn && !btn.disabled) {{
-                        btn.click();
-                        return 'clicked_button';
-                    }}
-                    return 'need_enter';
-                }})()
-                """
-                res2 = await cdp_call("Runtime.evaluate", {"expression": type_expr, "returnByValue": True}, msg_id=2)
-                type_res = res2.get("result", {}).get("result", {}).get("value")
+                    # 2. Digitar e enviar o prompt
+                    safe_prompt = json.dumps(prompt)
+                    type_expr = f"""
+                    (() => {{
+                        const el = document.querySelector('[aria-label="Message input"], [placeholder="Message input"]');
+                        if (!el) return false;
+                        el.focus();
+                        document.execCommand('selectAll', false, null);
+                        document.execCommand('insertText', false, {safe_prompt});
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        
+                        const btn = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"]');
+                        if (btn && !btn.disabled) {{
+                            btn.click();
+                            return 'clicked_button';
+                        }}
+                        return 'need_enter';
+                    }})()
+                    """
+                    res2 = await cdp_call("Runtime.evaluate", {"expression": type_expr, "returnByValue": True}, msg_id=2)
+                    type_res = res2.get("result", {}).get("result", {}).get("value")
 
-                if type_res != 'clicked_button':
-                    await asyncio.sleep(0.2)
-                    await cdp_call("Input.dispatchKeyEvent", {
-                        "type": "rawKeyDown",
-                        "key": "Enter",
-                        "code": "Enter",
-                        "windowsVirtualKeyCode": 13,
-                        "nativeVirtualKeyCode": 13,
-                        "text": "\r"
-                    }, msg_id=3)
-                    await cdp_call("Input.dispatchKeyEvent", {
-                        "type": "keyUp",
-                        "key": "Enter",
-                        "code": "Enter",
-                        "windowsVirtualKeyCode": 13,
-                        "nativeVirtualKeyCode": 13
-                    }, msg_id=4)
+                    if type_res != 'clicked_button':
+                        await asyncio.sleep(0.2)
+                        await cdp_call("Input.dispatchKeyEvent", {
+                            "type": "rawKeyDown",
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                            "text": "\r"
+                        }, msg_id=3)
+                        await cdp_call("Input.dispatchKeyEvent", {
+                            "type": "keyUp",
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13
+                        }, msg_id=4)
 
-                # 3. Ler o novo conversation_id da URL atual com retry
-                for attempt in range(5):
-                    await asyncio.sleep(0.8)
-                    url_expr = "window.location.pathname"
-                    url_res = await cdp_call("Runtime.evaluate", {"expression": url_expr, "returnByValue": True}, msg_id=10 + attempt)
-                    pathname = url_res.get("result", {}).get("result", {}).get("value", "")
-                    if "/c/" in pathname:
-                        new_id = pathname.split("/c/")[-1].split("/")[0].split("?")[0]
-                        return new_id
-                return None
-        except Exception as e:
-            print(f"[CDP Controller] Erro ao criar conversa no desktop: {e}")
-            return None
+                    # 3. Ler o novo conversation_id da URL atual com retry
+                    for attempt in range(5):
+                        await asyncio.sleep(0.8)
+                        url_expr = "window.location.pathname"
+                        url_res = await cdp_call("Runtime.evaluate", {"expression": url_expr, "returnByValue": True}, msg_id=10 + attempt)
+                        pathname = url_res.get("result", {}).get("result", {}).get("value", "")
+                        if "/c/" in pathname:
+                            new_id = pathname.split("/c/")[-1].split("/")[0].split("?")[0]
+                            return new_id
+                    return None
+                except Exception as e:
+                    print(f"[CDP Controller] Erro ao criar conversa no desktop: {e}")
+                    return None
 
     async def stop_execution(self, conversation_id: str) -> bool:
         """Clica no botão de Parar execução (Stop execution) na interface desktop do Antigravity."""
-        port = self.get_devtools_port()
-        if not port:
-            return False
-        ws_url = await self.get_page_ws_url(port)
-        if not ws_url:
-            return False
-        try:
-            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=4, origin=None) as ws:
+        async with self.cdp_session(max_size=5 * 1024 * 1024, close_timeout=4.0) as ws:
+            if not ws:
+                return False
+            try:
                 expr = """
                 (() => {
                     const stopBtn = document.querySelector('button[aria-label*="Stop execution"], button[title*="Stop execution"], button[aria-label*="Stop"], button[data-testid*="stop"]');
@@ -452,23 +462,18 @@ class CDPController:
                     return false;
                 })()
                 """
-                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": expr, "returnByValue": True}}))
-                res = json.loads(await ws.recv())
+                res = await self.cdp_call(ws, "Runtime.evaluate", {"expression": expr, "returnByValue": True}, msg_id=1, timeout=4.0)
                 return bool(res.get("result", {}).get("result", {}).get("value"))
-        except Exception as e:
-            print(f"[CDP Controller] Erro ao parar execução: {e}")
-            return False
+            except Exception as e:
+                print(f"[CDP Controller] Erro ao parar execução: {e}")
+                return False
 
     async def get_models(self) -> Dict[str, Any]:
         """Obtém o modelo ativo atual e os modelos disponíveis no Antigravity desktop."""
-        port = self.get_devtools_port()
-        if not port:
-            return {"current_model": "Desconhecido", "available_models": []}
-        ws_url = await self.get_page_ws_url(port)
-        if not ws_url:
-            return {"current_model": "Desconhecido", "available_models": []}
-        try:
-            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=4, origin=None) as ws:
+        async with self.cdp_session(max_size=5 * 1024 * 1024, close_timeout=4.0) as ws:
+            if not ws:
+                return {"current_model": "Desconhecido", "available_models": []}
+            try:
                 # 1. Obter modelo atual
                 get_curr_expr = r"""
                 (() => {
@@ -480,8 +485,7 @@ class CDPController:
                     return btn.innerText.trim() || 'Gemini 3.8 Flash High';
                 })()
                 """
-                await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": get_curr_expr, "returnByValue": True}}))
-                res1 = json.loads(await ws.recv())
+                res1 = await self.cdp_call(ws, "Runtime.evaluate", {"expression": get_curr_expr, "returnByValue": True}, msg_id=1, timeout=3.0)
                 current_model = res1.get("result", {}).get("result", {}).get("value") or "Gemini 3.8 Flash High"
 
                 # 2. Clicar no botão para abrir as opções de modelos
@@ -495,8 +499,7 @@ class CDPController:
                     return false;
                 })()
                 """
-                await ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": open_expr, "returnByValue": True}}))
-                await ws.recv()
+                await self.cdp_call(ws, "Runtime.evaluate", {"expression": open_expr, "returnByValue": True}, msg_id=2, timeout=2.0)
                 await asyncio.sleep(0.3)
 
                 # 3. Ler opções do menu
@@ -514,8 +517,7 @@ class CDPController:
                     return items;
                 })()
                 """
-                await ws.send(json.dumps({"id": 3, "method": "Runtime.evaluate", "params": {"expression": read_opts_expr, "returnByValue": True}}))
-                res3 = json.loads(await ws.recv())
+                res3 = await self.cdp_call(ws, "Runtime.evaluate", {"expression": read_opts_expr, "returnByValue": True}, msg_id=3, timeout=3.0)
                 opts = res3.get("result", {}).get("result", {}).get("value") or []
 
                 if not opts:
@@ -530,37 +532,28 @@ class CDPController:
                     "current_model": current_model,
                     "available_models": opts
                 }
-        except Exception as e:
-            print(f"[CDP Controller] Erro ao buscar modelos: {e}")
-            return {
-                "current_model": "Gemini 3.8 Flash High",
-                "available_models": [
-                    {"name": "Gemini 3.8 Flash High", "badge": "Padrão", "id": "flash"},
-                    {"name": "Claude Sonnet 4.6 (Thinking)", "badge": "Raciocínio", "id": "sonnet"},
-                    {"name": "Claude Opus 4.6 (Thinking)", "badge": "Máxima Capacidade", "id": "opus"},
-                ]
-            }
+            except Exception as e:
+                print(f"[CDP Controller] Erro ao buscar modelos: {e}")
+                return {
+                    "current_model": "Gemini 3.8 Flash High",
+                    "available_models": [
+                        {"name": "Gemini 3.8 Flash High", "badge": "Padrão", "id": "flash"},
+                        {"name": "Claude Sonnet 4.6 (Thinking)", "badge": "Raciocínio", "id": "sonnet"},
+                        {"name": "Claude Opus 4.6 (Thinking)", "badge": "Máxima Capacidade", "id": "opus"},
+                    ]
+                }
 
     async def set_model(self, model_name: str) -> bool:
         """Seleciona um modelo no dropdown do Antigravity desktop."""
-        port = self.get_devtools_port()
-        if not port:
-            return False
-        ws_url = await self.get_page_ws_url(port)
-        if not ws_url:
-            return False
-        try:
-            async with websockets.connect(ws_url, max_size=5 * 1024 * 1024, close_timeout=4, origin=None) as ws:
+        async with self.cdp_session(max_size=5 * 1024 * 1024, close_timeout=4.0) as ws:
+            if not ws:
+                return False
+            try:
                 # 1. Abrir dropdown
-                await ws.send(json.dumps({
-                    "id": 1,
-                    "method": "Runtime.evaluate",
-                    "params": {
-                        "expression": "(() => { const b = document.querySelector('button[aria-label*=\"Select model\"]'); if (b) { b.click(); return true; } return false; })()",
-                        "returnByValue": True
-                    }
-                }))
-                await ws.recv()
+                await self.cdp_call(ws, "Runtime.evaluate", {
+                    "expression": "(() => { const b = document.querySelector('button[aria-label*=\"Select model\"]'); if (b) { b.click(); return true; } return false; })()",
+                    "returnByValue": True
+                }, msg_id=1, timeout=2.0)
                 await asyncio.sleep(0.3)
 
                 # 2. Clicar no item correspondente ao model_name
@@ -584,11 +577,10 @@ class CDPController:
                     return false;
                 }})()
                 """
-                await ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {"expression": select_expr, "returnByValue": True}}))
-                res2 = json.loads(await ws.recv())
+                res2 = await self.cdp_call(ws, "Runtime.evaluate", {"expression": select_expr, "returnByValue": True}, msg_id=2, timeout=3.0)
                 return bool(res2.get("result", {}).get("result", {}).get("value"))
-        except Exception as e:
-            print(f"[CDP Controller] Erro ao trocar modelo: {e}")
-            return False
+            except Exception as e:
+                print(f"[CDP Controller] Erro ao trocar modelo: {e}")
+                return False
 
 cdp_controller = CDPController()

@@ -5,6 +5,7 @@ import base64
 import time
 import pytest
 from pathlib import Path
+from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
 # Ensure root directory is on PYTHONPATH
@@ -16,6 +17,26 @@ from server.antigravity_service import AntigravityService
 
 client = TestClient(app)
 auth_headers = {"X-API-Key": API_KEY}
+TARGET_TEST_CID = "test-isolated-automated-conversation"
+
+@pytest.fixture(autouse=True)
+def mock_cdp_desktop():
+    """Garante que os testes automatizados nunca interfiram na janela real do Antigravity no PC."""
+    with patch("server.main.cdp_controller.is_desktop_available", new_callable=AsyncMock) as m_avail, \
+         patch("server.main.cdp_controller.send_message_to_desktop", new_callable=AsyncMock) as m_send:
+        m_avail.return_value = True
+        m_send.return_value = True
+        yield
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_brain_dir():
+    """Limpa o diretório de arquivos temporários de teste ao final da suíte."""
+    yield
+    import shutil
+    service = AntigravityService()
+    test_dir = service.paths.BRAIN_DIR / TARGET_TEST_CID
+    if test_dir.exists():
+        shutil.rmtree(test_dir, ignore_errors=True)
 
 def test_01_api_status_and_health():
     """Testa se a API responde ao status e fornece metadados do servidor."""
@@ -51,9 +72,9 @@ def test_03_projects_listing():
 
 def test_04_attach_image_png():
     """Testa anexar uma imagem PNG: upload base64, salvamento no .user_uploaded e link Markdown."""
-    # Criar 1x1 PNG válido em base64
-    tiny_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-    target_cid = "b14ec5fe-c49d-4125-9b6a-cb61543c64c0"
+    # Criar PNG válido em base64 (16x16)
+    tiny_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAGElEQVR4nGP4z8BAEiJN9aiGUQ0MQ0kDAJD5/wGaM2eTAAAAAElFTkSuQmCC"
+    target_cid = TARGET_TEST_CID
     
     payload = {
         "prompt": "Teste de envio de imagem PNG",
@@ -74,7 +95,7 @@ def test_04_attach_image_png():
 def test_05_attach_document_pdf():
     """Testa anexar um documento PDF/texto: upload base64, salvamento no .user_uploaded e link Markdown."""
     dummy_pdf_b64 = base64.b64encode(b"%PDF-1.4 test document content for antigravity").decode("utf-8")
-    target_cid = "b14ec5fe-c49d-4125-9b6a-cb61543c64c0"
+    target_cid = TARGET_TEST_CID
     
     payload = {
         "prompt": "Teste de envio de documento PDF",
@@ -96,7 +117,7 @@ def test_06_attach_apk_binary():
     # Simular binário de APK (ZIP header PK\x03\x04)
     dummy_apk_bytes = b"PK\x03\x04\x14\x00\x08\x00\x08\x00android_app_test_package_content"
     dummy_apk_b64 = base64.b64encode(dummy_apk_bytes).decode("utf-8")
-    target_cid = "b14ec5fe-c49d-4125-9b6a-cb61543c64c0"
+    target_cid = TARGET_TEST_CID
     
     payload = {
         "prompt": "Teste de anexo de APK",
@@ -116,7 +137,7 @@ def test_06_attach_apk_binary():
 def test_07_empty_prompt_with_attachment_graceful_fallback():
     """Testa envio de anexo sem prompt digitado: o sistema deve prover prompt automático sem falhar."""
     dummy_code_b64 = base64.b64encode(b"print('hello world')").decode("utf-8")
-    target_cid = "b14ec5fe-c49d-4125-9b6a-cb61543c64c0"
+    target_cid = TARGET_TEST_CID
     
     payload = {
         "prompt": "",  # Usuário não digitou nada
@@ -138,7 +159,7 @@ def test_08_skills_catalog_and_rea_integration():
 
 def test_09_background_tasks_and_models():
     """Testa se as tarefas em segundo plano e a lista de modelos de IA estão operacionais."""
-    target_cid = "b14ec5fe-c49d-4125-9b6a-cb61543c64c0"
+    target_cid = TARGET_TEST_CID
     res_tasks = client.get(f"/api/conversations/{target_cid}/background-tasks", headers=auth_headers)
     assert res_tasks.status_code == 200
     assert "tasks" in res_tasks.json()
@@ -182,9 +203,9 @@ def test_12_desktop_launch_endpoint():
 
 def test_13_attach_multiple_files_batch():
     """Testa anexar múltiplos arquivos simultâneos (imagens + documentos + APK) no payload attachments."""
-    tiny_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    tiny_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAGElEQVR4nGP4z8BAEiJN9aiGUQ0MQ0kDAJD5/wGaM2eTAAAAAElFTkSuQmCC"
     dummy_doc_b64 = base64.b64encode(b"multi file document content").decode("utf-8")
-    target_cid = "b14ec5fe-c49d-4125-9b6a-cb61543c64c0"
+    target_cid = TARGET_TEST_CID
 
     payload = {
         "prompt": "Teste de múltiplos arquivos",

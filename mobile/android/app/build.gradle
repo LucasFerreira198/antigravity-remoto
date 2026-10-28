@@ -105,11 +105,16 @@ android {
             keyPassword 'android'
         }
         release {
-            if (file('release.keystore').exists()) {
-                storeFile file('release.keystore')
-                storePassword 'antigravity123'
-                keyAlias 'antigravity-release'
-                keyPassword 'antigravity123'
+            def keystorePath = System.getenv("RELEASE_STORE_FILE") ?: (findProperty('RELEASE_STORE_FILE') ?: 'release.keystore')
+            def keystorePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: (findProperty('RELEASE_STORE_PASSWORD') ?: '')
+            def keystoreKeyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: (findProperty('RELEASE_KEY_ALIAS') ?: 'antigravity-release')
+            def keystoreKeyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: (findProperty('RELEASE_KEY_PASSWORD') ?: '')
+
+            if (keystorePassword && file(keystorePath).exists()) {
+                storeFile file(keystorePath)
+                storePassword keystorePassword
+                keyAlias keystoreKeyAlias
+                keyPassword keystoreKeyPassword
             } else {
                 storeFile file('debug.keystore')
                 storePassword 'android'

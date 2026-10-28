@@ -21,7 +21,8 @@ env/
 server_auth.json
 server/last_tunnel_url.txt
 *.keystore
-!mobile/release.keystore
+*.jks
+release.keystore
 
 # Cloudflared binary
 server/bin/cloudflared.exe

@@ -9,6 +9,13 @@ if str(ROOT_DIR) not in sys.path:
 
 LOG_FILE = ROOT_DIR / "server" / "bridge_daemon.log"
 try:
+    if LOG_FILE.exists() and LOG_FILE.stat().st_size > 5 * 1024 * 1024:
+        old_log = ROOT_DIR / "server" / "bridge_daemon.log.old"
+        try:
+            old_log.unlink(missing_ok=True)
+            LOG_FILE.rename(old_log)
+        except Exception:
+            pass
     log_fp = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
     sys.stdout = log_fp
     sys.stderr = log_fp

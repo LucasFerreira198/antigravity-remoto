@@ -40,12 +40,13 @@ class TunnelManager:
         return local_bin
 
     def kill_existing_cloudflared(self, exclude_pid: Optional[int] = None):
-        """Finaliza processos cloudflared órfãos para evitar conflitos de túnel."""
-        for proc in psutil.process_iter(['pid', 'name']):
+        """Finaliza processos cloudflared órfãos pertencentes a este túnel (porta local)."""
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
             try:
-                name = proc.info.get('name') or ''
+                name = (proc.info.get('name') or '').lower()
+                cmdline = ' '.join(proc.info.get('cmdline') or []).lower()
                 pid = proc.info.get('pid')
-                if 'cloudflared' in name.lower() and pid != exclude_pid:
+                if 'cloudflared' in name and pid != exclude_pid and f":{self.local_port}" in cmdline:
                     proc.kill()
             except Exception:
                 pass
@@ -126,11 +127,8 @@ class TunnelManager:
         payload = json.dumps({
             "bridge_id": self.bridge_id,
             "remote_url": self.public_url,
-            "local_url": f"http://{self.get_local_ip()}:{self.local_port}",
-            "hostname": socket.gethostname(),
             "timestamp": int(now),
-            "status": "online",
-            "version": "1.0.22"
+            "status": "online"
         }).encode("utf-8")
 
         topic = f"agbridge_{self.bridge_id}"

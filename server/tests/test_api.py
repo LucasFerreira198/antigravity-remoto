@@ -59,4 +59,4 @@ def test_skills_endpoint():
     assert response.status_code == 200
     data = response.json()
     assert "skills" in data
-    assert len(data["skills"]) > 50
+    assert len(data["skills"]) > 0

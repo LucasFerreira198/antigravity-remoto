@@ -102,7 +102,7 @@ def stop_daemon():
         try:
             name = (proc.info.get('name') or '').lower()
             cmdline = ' '.join(proc.info.get('cmdline') or []).lower()
-            if 'server.main' in cmdline or 'run_daemon.py' in cmdline or 'cloudflared' in name:
+            if 'server.main' in cmdline or 'run_daemon.py' in cmdline or ('cloudflared' in name and ':8765' in cmdline):
                 proc.kill()
                 killed += 1
         except (psutil.NoSuchProcess, psutil.AccessDenied):

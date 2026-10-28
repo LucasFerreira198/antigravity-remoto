@@ -122,7 +122,20 @@ class ApiService {
       let errorMsg = `Erro ${response.status}: ${response.statusText}`;
       try {
         const errorData = await response.json();
-        if (errorData.detail) errorMsg = errorData.detail;
+        if (errorData.detail) {
+          if (typeof errorData.detail === 'string') {
+            errorMsg = errorData.detail;
+          } else if (Array.isArray(errorData.detail)) {
+            // FastAPI 422 Unprocessable Entity validation details
+            errorMsg = errorData.detail
+              .map((d: any) => d.msg || d.message || JSON.stringify(d))
+              .join('; ');
+          } else if (typeof errorData.detail === 'object') {
+            errorMsg = JSON.stringify(errorData.detail);
+          }
+        } else if (errorData.message) {
+          errorMsg = errorData.message;
+        }
       } catch (e) {}
       throw new Error(errorMsg);
     }

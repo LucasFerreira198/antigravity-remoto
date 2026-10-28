@@ -4,11 +4,12 @@ import json
 import asyncio
 import socket
 import threading
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Dict, Any, Set, List
 
-from fastapi import FastAPI, HTTPException, Header, Query, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, HTTPException, Header, Query, WebSocket, WebSocketDisconnect, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
@@ -18,6 +19,24 @@ from .config import AppPaths, API_KEY
 from .antigravity_service import AntigravityService
 from .tunnel import TunnelManager
 from .cdp_controller import cdp_controller
+
+def is_valid_image(data: bytes, ext: str) -> bool:
+    """Verifica se os bytes e a extensão correspondem a uma imagem real suportada (.png, .jpg, .jpeg, .webp)."""
+    norm_ext = ext.lower()
+    if norm_ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+        return False
+    if len(data) < 12:
+        return False
+    # PNG: 89 50 4E 47 0D 0A 1A 0A
+    if norm_ext == ".png" and data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    # JPEG: FF D8 FF
+    if norm_ext in {".jpg", ".jpeg"} and data.startswith(b"\xff\xd8\xff"):
+        return True
+    # WebP: RIFF....WEBP
+    if norm_ext == ".webp" and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return True
+    return False
 
 service = AntigravityService()
 tunnel_manager = TunnelManager(local_port=8765)
@@ -70,7 +89,7 @@ async def verify_token(
     elif token:
         provided = token
 
-    if not provided or provided != API_KEY:
+    if not provided or not secrets.compare_digest(provided, API_KEY):
         raise HTTPException(status_code=401, detail="Token de autorização inválido ou ausente.")
     return True
 
@@ -98,7 +117,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -132,7 +151,12 @@ def index():
     }
 
 @app.get("/api/pairing-info")
-def get_pairing_info():
+def get_pairing_info(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None),
+    token: Optional[str] = Query(None)
+):
     hostname = socket.gethostname()
     local_ip = "127.0.0.1"
     try:
@@ -143,13 +167,30 @@ def get_pairing_info():
     except Exception:
         pass
 
-    return {
+    # Apenas fornece api_key se a requisição for estritamente do loopback local (sem proxy reverso/túnel externo) ou se estiver autenticada
+    client_host = request.client.host if request.client else ""
+    has_forwarded = bool(request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for"))
+    is_local = (client_host in ("127.0.0.1", "::1", "testclient") and not has_forwarded)
+
+    provided = None
+    if authorization and authorization.startswith("Bearer "):
+        provided = authorization[7:]
+    elif x_api_key:
+        provided = x_api_key
+    elif token:
+        provided = token
+    is_auth = bool(provided and secrets.compare_digest(provided, API_KEY))
+
+    info = {
         "hostname": hostname,
         "remote_url": tunnel_manager.public_url,
         "local_url": f"http://{local_ip}:{tunnel_manager.local_port}",
-        "api_key": API_KEY,
         "is_tunnel_ready": bool(tunnel_manager.public_url)
     }
+    if is_local or is_auth:
+        info["api_key"] = API_KEY
+
+    return info
 
 # ----------------- ROTAS PROTEGIDAS -----------------
 
@@ -264,7 +305,7 @@ async def create_conversation(req: NewConversationRequest):
     t = threading.Thread(target=run_turn, daemon=True)
     t.start()
 
-    convo_created_event.wait(timeout=5)
+    await asyncio.to_thread(convo_created_event.wait, 5)
 
     return {
         "status": "initiated",
@@ -282,6 +323,7 @@ async def delete_conversation(conversation_id: str):
 async def send_message(conversation_id: str, req: SendMessageRequest):
     """Envia mensagem para a conversa: via CDP na interface do PC ou fallback para agy.exe, com suporte a múltiplos anexos (imagens, documentos, APKs)."""
     saved_file_paths: List[str] = []
+    saved_image_paths: List[str] = []
     prompt_to_send = (req.prompt or "").strip()
 
     # Coletar todos os arquivos anexados (seja pela lista `attachments` ou pelos campos legados `file_base64`/`image_base64`)
@@ -307,35 +349,60 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
     if items_to_process:
         try:
             import base64, time
-            brain_uploads = service.paths.BRAIN_DIR / conversation_id / ".user_uploaded"
+            clean_cid = os.path.basename(conversation_id).strip()
+            brain_uploads = (service.paths.BRAIN_DIR / clean_cid / ".user_uploaded").resolve()
             brain_uploads.mkdir(parents=True, exist_ok=True)
 
             for idx, item in enumerate(items_to_process):
                 try:
-                    ext = ".png" if item.is_image else ""
-                    if item.filename and "." in item.filename:
-                        ext = Path(item.filename).suffix
-                    fname = item.filename or (f"media_{int(time.time() * 1000)}_{idx}{ext}" if item.is_image else f"file_{int(time.time() * 1000)}_{idx}")
-                    saved_file = brain_uploads / fname
-                    saved_file.write_bytes(base64.b64decode(item.base64))
-                    f_path = str(saved_file.resolve())
+                    raw_bytes = base64.b64decode(item.base64)
+                    
+                    # Sanitização estrita contra Path Traversal
+                    raw_filename = item.filename or ""
+                    clean_filename = os.path.basename(raw_filename).strip()
+
+                    ext = Path(clean_filename).suffix.lower() if clean_filename and "." in clean_filename else ""
+                    if not ext and item.is_image:
+                        ext = ".png"
+
+                    # Validar se é imagem real (.png, .jpg, .jpeg, .webp) baseando-se nos magic bytes e extensão
+                    is_real_img = is_valid_image(raw_bytes, ext or ".png")
+                    if is_real_img and not ext:
+                        ext = ".png"
+
+                    if not clean_filename:
+                        timestamp = int(time.time() * 1000)
+                        clean_filename = f"media_{timestamp}_{idx}{ext}" if is_real_img else f"file_{timestamp}_{idx}{ext or '.bin'}"
+
+                    saved_file = (brain_uploads / clean_filename).resolve()
+                    if not saved_file.is_relative_to(brain_uploads):
+                        print(f"[Main] Path traversal bloqueado para o arquivo: {clean_filename}")
+                        continue
+
+                    saved_file.write_bytes(raw_bytes)
+                    f_path = str(saved_file)
                     saved_file_paths.append(f_path)
                     norm_link = f_path.replace("\\", "/")
                     actual_name = saved_file.name
 
-                    if item.is_image:
+                    if is_real_img:
+                        saved_image_paths.append(f_path)
                         base_p = prompt_to_send if prompt_to_send else "Analise a imagem anexada."
                         prompt_to_send = f"{base_p}\n\n![Imagem anexada: {actual_name}](file:///{norm_link})"
                     else:
                         base_p = prompt_to_send if prompt_to_send else f"Analise o arquivo anexado: {actual_name}"
-                        prompt_to_send = f"{base_p}\n\n[Arquivo anexado: {actual_name}](file:///{norm_link})"
+                        prompt_to_send = f"{base_p}\n\n[Arquivo: {actual_name}](file:///{norm_link})"
                 except Exception as inner_e:
                     print(f"[Main] Erro ao salvar arquivo {item.filename}: {inner_e}")
         except Exception as e:
             print(f"[Main] Erro ao processar anexos: {e}")
 
     prompt_to_send = prompt_to_send.strip()
-    primary_file_path = saved_file_paths[0] if saved_file_paths else None
+
+    if not prompt_to_send and not saved_file_paths:
+        raise HTTPException(status_code=400, detail="A mensagem e os anexos não podem estar vazios.")
+
+    primary_file_path = saved_image_paths[0] if saved_image_paths else None
 
     # 1. Enviar diretamente para a janela do PC via CDP (executa na tela do PC)
     desktop_ready = await cdp_controller.is_desktop_available()
@@ -377,8 +444,7 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
         success = await cdp_controller.send_message_to_desktop(
             conversation_id,
             prompt_to_send,
-            file_path=primary_file_path,
-            file_paths=saved_file_paths
+            file_paths=saved_image_paths
         )
         if success:
             broadcast_to_conversation(
@@ -448,15 +514,25 @@ def get_artifact(conversation_id: str, filename: str):
         raise HTTPException(status_code=404, detail="Artefato não encontrado.")
     return data
 
-@app.get("/api/conversations/{conversation_id}/media/{filename}")
+@app.get("/api/conversations/{conversation_id}/media/{filename}", dependencies=[Depends(verify_token)])
 def get_media_file(conversation_id: str, filename: str):
     """Serve imagens anexadas na conversa de forma segura."""
-    brain_dir = service.paths.BRAIN_DIR / conversation_id
-    target = brain_dir / ".user_uploaded" / filename
-    if not target.exists():
-        target = brain_dir / filename
-    if not target.exists() or not str(target.resolve()).startswith(str(brain_dir.resolve())):
-        raise HTTPException(status_code=404, detail="Mídia não encontrada.")
+    clean_cid = os.path.basename(conversation_id).strip()
+    clean_filename = os.path.basename(filename).strip()
+    brain_dir = (service.paths.BRAIN_DIR / clean_cid).resolve()
+    uploads_dir = (brain_dir / ".user_uploaded").resolve()
+
+    target = (uploads_dir / clean_filename).resolve()
+    if not target.exists() or not target.is_relative_to(uploads_dir):
+        target = (brain_dir / clean_filename).resolve()
+        if not target.exists() or not target.is_relative_to(brain_dir) or not target.is_file():
+            raise HTTPException(status_code=404, detail="Mídia não encontrada.")
+
+    # Restringir apenas a extensões seguras de mídia
+    allowed_exts = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"}
+    if target.suffix.lower() not in allowed_exts:
+        raise HTTPException(status_code=403, detail="Tipo de arquivo não permitido.")
+
     from fastapi.responses import FileResponse
     ext = target.suffix.lower()
     mime = "image/png"
@@ -466,6 +542,8 @@ def get_media_file(conversation_id: str, filename: str):
         mime = "image/webp"
     elif ext == ".svg":
         mime = "image/svg+xml"
+    elif ext == ".gif":
+        mime = "image/gif"
     return FileResponse(str(target), media_type=mime)
 
 # ----------------- TAREFAS EM SEGUNDO PLANO -----------------
@@ -546,20 +624,25 @@ async def set_conversation_model(conversation_id: str, payload: ModelSelectPaylo
 
 @app.websocket("/api/conversations/{conversation_id}/stream")
 async def websocket_conversation_stream(websocket: WebSocket, conversation_id: str, token: Optional[str] = Query(None)):
-    if token != API_KEY:
+    if not token or not secrets.compare_digest(token, API_KEY):
         await websocket.close(code=4001, reason="Não autorizado")
+        return
+
+    clean_cid = os.path.basename(conversation_id).strip()
+    if not clean_cid:
+        await websocket.close(code=4000, reason="ID de conversa inválido")
         return
 
     await websocket.accept()
     
     with ws_lock:
-        if conversation_id not in active_websockets:
-            active_websockets[conversation_id] = set()
-        active_websockets[conversation_id].add(websocket)
+        if clean_cid not in active_websockets:
+            active_websockets[clean_cid] = set()
+        active_websockets[clean_cid].add(websocket)
 
     # 1. Enviar histórico limpo existente inicialmente
     try:
-        transcript_data = service.get_conversation_transcript(conversation_id)
+        transcript_data = service.get_conversation_transcript(clean_cid)
         await websocket.send_text(json.dumps({
             "event": "initial_history",
             "messages": transcript_data["messages"],
@@ -569,15 +652,15 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
     except Exception as e:
         print(f"Erro ao enviar histórico inicial: {e}")
 
-    # 2. Monitorar transcript.jsonl, SQLite WAL, summaries e fila de mensagens em tempo real ultra-rápido (120ms)
-    brain_dir = service.paths.BRAIN_DIR / conversation_id / ".system_generated" / "logs"
+    # 2. Monitorar transcript.jsonl, SQLite WAL, summaries e fila de mensagens em tempo real
+    brain_dir = service.paths.BRAIN_DIR / clean_cid / ".system_generated" / "logs"
     file_full = brain_dir / "transcript_full.jsonl"
     file_std = brain_dir / "transcript.jsonl"
-    wal_file = service.paths.CONVERSATIONS_DIR / f"{conversation_id}.db-wal"
-    db_file = service.paths.CONVERSATIONS_DIR / f"{conversation_id}.db"
+    wal_file = service.paths.CONVERSATIONS_DIR / f"{clean_cid}.db-wal"
+    db_file = service.paths.CONVERSATIONS_DIR / f"{clean_cid}.db"
     summaries_db = service.paths.CONVERSATION_SUMMARIES_DB
     summaries_wal = service.paths.ANTIGRAVITY_DIR / "conversation_summaries.db-wal"
-    messages_dir = service.paths.BRAIN_DIR / conversation_id / ".system_generated" / "messages"
+    messages_dir = service.paths.BRAIN_DIR / clean_cid / ".system_generated" / "messages"
 
     def get_stats():
         s1 = file_full.stat().st_size if file_full.exists() else 0
@@ -592,8 +675,9 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
         m5 = summaries_db.stat().st_mtime if summaries_db.exists() else 0
         s6 = summaries_wal.stat().st_size if summaries_wal.exists() else 0
         m6 = summaries_wal.stat().st_mtime if summaries_wal.exists() else 0
-        q_count = len(list(messages_dir.glob("*.json"))) if messages_dir.exists() else 0
-        return (s1, m1, s2, m2, s3, m3, s4, m4, s5, m5, s6, m6, q_count)
+        # Em vez de varrer todo o diretório com glob, inspeciona o mtime da pasta de mensagens
+        q_mtime = messages_dir.stat().st_mtime if messages_dir.exists() else 0
+        return (s1, m1, s2, m2, s3, m3, s4, m4, s5, m5, s6, m6, q_mtime)
 
     last_stats = get_stats()
     last_is_active = transcript_data.get("is_active", False)
@@ -602,7 +686,7 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
     async def watch_transcript_loop():
         nonlocal last_stats, last_is_active
         while not stop_event.is_set():
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(0.30)
             try:
                 curr_stats = get_stats()
                 if curr_stats != last_stats:
@@ -678,7 +762,7 @@ async def websocket_conversation_stream(websocket: WebSocket, conversation_id: s
         stop_event.set()
         watcher_task.cancel()
         with ws_lock:
-            if conversation_id in active_websockets:
-                active_websockets[conversation_id].discard(websocket)
-                if not active_websockets[conversation_id]:
-                    del active_websockets[conversation_id]
+            if clean_cid in active_websockets:
+                active_websockets[clean_cid].discard(websocket)
+                if not active_websockets[clean_cid]:
+                    del active_websockets[clean_cid]

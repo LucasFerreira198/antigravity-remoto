@@ -57,18 +57,25 @@ export default function ProjectsScreen({
   }, []);
 
   const handleCreateProject = async () => {
-    if (!newProjectName.trim()) {
-      Alert.alert('Atenção', 'Informe o nome do projeto.');
+    const name = newProjectName.trim();
+    const folder = newFolderPath.trim();
+
+    if (!name || name.length < 2) {
+      Alert.alert('Atenção', 'Informe um nome válido para o projeto (mínimo 2 caracteres).');
       return;
     }
-    if (!newFolderPath.trim()) {
+    if (!folder || folder.length < 2) {
       Alert.alert('Atenção', 'Informe o caminho da pasta no computador.');
+      return;
+    }
+    if (/[*?"<>|]/.test(folder)) {
+      Alert.alert('Atenção', 'O caminho da pasta contém caracteres proibidos (* ? " < > |).');
       return;
     }
 
     setIsCreating(true);
     try {
-      await api.createProject(newProjectName.trim(), newFolderPath.trim());
+      await api.createProject(name, folder);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setNewProjectName('');
       setNewFolderPath('');
@@ -92,7 +99,7 @@ export default function ProjectsScreen({
 
           <View style={styles.headerTitleWrap}>
             <Text style={styles.headerTitle}>Projetos no Workspace</Text>
-            <Text style={styles.headerSubtitle}>Sincronizado via antigravity_service.py</Text>
+            <Text style={styles.headerSubtitle}>Repositórios e pastas ativas no computador</Text>
           </View>
 
           <TouchableOpacity
@@ -100,7 +107,7 @@ export default function ProjectsScreen({
             activeOpacity={0.8}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setNewFolderPath('C:\\Users\\Lucas\\Documents\\GitHub\\');
+              setNewFolderPath('');
               setModalVisible(true);
             }}
           >
@@ -182,9 +189,9 @@ export default function ProjectsScreen({
                   <View style={styles.cardBottomRow}>
                     <View style={styles.branchWrap}>
                       <GitBranch size={12} color={colors.accentCyan} style={{ marginRight: 4 }} />
-                      <Text style={styles.branchText}>main</Text>
+                      <Text style={styles.branchText}>Ativo</Text>
                     </View>
-                    <Text style={styles.techText}>React Native • FastAPI • CDP</Text>
+                    <Text style={styles.techText}>Workspace Local</Text>
                   </View>
                 </TouchableOpacity>
               );
@@ -222,7 +229,7 @@ export default function ProjectsScreen({
               <Text style={styles.inputLabel}>CAMINHO ABSOLUTO NO COMPUTADOR</Text>
               <TextInput
                 style={styles.input}
-                placeholder="Ex: C:\Users\Lucas\Documents\GitHub\NovoProjeto"
+                placeholder="Ex: C:\Projetos\NovoProjeto ou ./meu-projeto"
                 placeholderTextColor={colors.textSecondary}
                 value={newFolderPath}
                 onChangeText={setNewFolderPath}

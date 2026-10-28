@@ -109,7 +109,11 @@ export default function ConversationsScreen({
           onPress: async () => {
             try {
               await api.deleteConversation(convo.id);
-              setConversations((prev) => prev.filter((c) => c.id !== convo.id));
+              setConversations((prev) => {
+                const updated = prev.filter((c) => c.id !== convo.id);
+                StorageService.saveConversationsCache(updated);
+                return updated;
+              });
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             } catch (err: any) {
               Alert.alert('Erro ao excluir', err?.message || 'Falha ao excluir conversa.');
@@ -129,7 +133,7 @@ export default function ConversationsScreen({
             <Search size={16} color={colors.textSecondary} style={styles.searchIcon} />
             <TextInput
               style={styles.searchInput}
-              placeholder="Pesquisar conversas ou artefactos..."
+              placeholder="Pesquisar conversas ou artefatos..."
               placeholderTextColor={colors.textSecondary}
               value={searchQuery}
               onChangeText={setSearchQuery}

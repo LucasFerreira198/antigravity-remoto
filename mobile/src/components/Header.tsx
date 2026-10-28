@@ -28,6 +28,12 @@ export default function Header({
   const [activeProject, setActiveProject] = useState<string>(currentProjectName);
 
   useEffect(() => {
+    if (currentProjectName) {
+      setActiveProject(currentProjectName);
+    }
+  }, [currentProjectName]);
+
+  useEffect(() => {
     // Buscar tarefas ativas e projetos
     const fetchStatus = async () => {
       try {

@@ -115,7 +115,7 @@ export default function BottomNavBar({
               currentTab === 'connect' && styles.tabLabelActive,
             ]}
           >
-            Ligação
+            Conexão
           </Text>
         </TouchableOpacity>
 

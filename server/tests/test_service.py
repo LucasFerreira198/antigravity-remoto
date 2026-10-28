@@ -93,3 +93,28 @@ def test_get_background_tasks_filtering():
             desc = t.get("description", "").lower()
             if "timer:" in desc:
                 assert "wait" not in desc
+
+def test_parse_attachment_from_text_formats():
+    service = AntigravityService()
+    
+    # 1. Novo formato padronizado de arquivo: [Arquivo: nome](file:///...)
+    text1, att1 = service.parse_attachment_from_text("Analise o arquivo\n\n[Arquivo: script.py](file:///C:/path/to/script.py)")
+    assert text1 == "Analise o arquivo"
+    assert att1 is not None
+    assert att1["name"] == "script.py"
+    assert att1["isImage"] is False
+    assert att1["uri"] == "file:///C:/path/to/script.py"
+
+    # 2. Formato legado de arquivo: [Arquivo anexado: nome](file:///...)
+    text2, att2 = service.parse_attachment_from_text("Veja isso\n\n[Arquivo anexado: doc.pdf](file:///C:/path/to/doc.pdf)")
+    assert text2 == "Veja isso"
+    assert att2 is not None
+    assert att2["name"] == "doc.pdf"
+    assert att2["isImage"] is False
+
+    # 3. Formato de imagem: ![Imagem anexada: foto.png](file:///...)
+    text3, att3 = service.parse_attachment_from_text("Foto da tela\n\n![Imagem anexada: screen.png](file:///C:/path/to/screen.png)")
+    assert text3 == "Foto da tela"
+    assert att3 is not None
+    assert att3["name"] == "screen.png"
+    assert att3["isImage"] is True
