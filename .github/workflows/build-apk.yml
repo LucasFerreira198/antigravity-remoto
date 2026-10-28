@@ -50,8 +50,8 @@ jobs:
       - name: Build Android Release APK
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
-          RELEASE_STORE_PASSWORD: antigravity
-          RELEASE_KEY_PASSWORD: antigravity
+          RELEASE_STORE_PASSWORD: antigravity123
+          RELEASE_KEY_PASSWORD: antigravity123
         run: |
           cd mobile/android
           chmod +x gradlew

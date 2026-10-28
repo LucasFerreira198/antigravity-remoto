@@ -106,9 +106,9 @@ android {
         }
         release {
             def keystorePath = System.getenv("RELEASE_STORE_FILE") ?: (findProperty('RELEASE_STORE_FILE') ?: 'release.keystore')
-            def keystorePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: (findProperty('RELEASE_STORE_PASSWORD') ?: 'antigravity')
+            def keystorePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: (findProperty('RELEASE_STORE_PASSWORD') ?: 'antigravity123')
             def keystoreKeyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: (findProperty('RELEASE_KEY_ALIAS') ?: 'antigravity-release')
-            def keystoreKeyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: (findProperty('RELEASE_KEY_PASSWORD') ?: 'antigravity')
+            def keystoreKeyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: (findProperty('RELEASE_KEY_PASSWORD') ?: 'antigravity123')
 
             if (file(keystorePath).exists()) {
                 storeFile file(keystorePath)
