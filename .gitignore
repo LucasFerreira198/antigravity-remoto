@@ -20,9 +20,10 @@ env/
 # Sensitive files
 server_auth.json
 server/last_tunnel_url.txt
-*.keystore
 *.jks
-release.keystore
+debug.keystore
+!mobile/release.keystore
+!mobile/android/app/release.keystore
 
 # Cloudflared binary
 server/bin/cloudflared.exe
