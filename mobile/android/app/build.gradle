@@ -116,7 +116,13 @@ android {
                 keyAlias keystoreKeyAlias
                 keyPassword keystoreKeyPassword
             } else {
-                storeFile file('debug.keystore')
+                def dbgKeystore = file('debug.keystore')
+                if (!dbgKeystore.exists()) {
+                    try {
+                        "keytool -genkey -v -keystore ${dbgKeystore.absolutePath} -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname CN=Android_Debug,O=Android,C=US".execute().waitFor()
+                    } catch (Exception ignored) {}
+                }
+                storeFile dbgKeystore
                 storePassword 'android'
                 keyAlias 'androiddebugkey'
                 keyPassword 'android'
