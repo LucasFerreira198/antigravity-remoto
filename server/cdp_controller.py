@@ -93,8 +93,14 @@ class CDPController:
         ws_url = await self.get_page_ws_url(port)
         return bool(ws_url)
 
-    async def send_message_to_desktop(self, conversation_id: str, prompt: str, file_path: Optional[str] = None) -> bool:
-        """Digita e envia a mensagem diretamente na janela ativa do Antigravity no PC, com suporte a anexo de arquivo."""
+    async def send_message_to_desktop(
+        self,
+        conversation_id: str,
+        prompt: str,
+        file_path: Optional[str] = None,
+        file_paths: Optional[List[str]] = None
+    ) -> bool:
+        """Digita e envia a mensagem diretamente na janela ativa do Antigravity no PC, com suporte a múltiplos anexos."""
         port = self.get_devtools_port()
         if not port:
             return False
@@ -133,8 +139,16 @@ class CDPController:
                 if nav_result in ("clicked_link", "navigated_url"):
                     await asyncio.sleep(0.8)
 
-                # 2. Se houver anexo de imagem / arquivo, injetar no input file
-                if file_path and Path(file_path).exists():
+                # 2. Se houver anexo(s) de imagem / arquivo, injetar no input file
+                all_files_to_inject = []
+                if file_paths:
+                    for fp in file_paths:
+                        if fp and Path(fp).exists():
+                            all_files_to_inject.append(str(Path(fp).resolve()))
+                elif file_path and Path(file_path).exists():
+                    all_files_to_inject.append(str(Path(file_path).resolve()))
+
+                if all_files_to_inject:
                     try:
                         await cdp_call("DOM.enable", {}, msg_id=10)
                         doc_res = await cdp_call("DOM.getDocument", {"depth": -1}, msg_id=11)
@@ -143,11 +157,10 @@ class CDPController:
                             q_res = await cdp_call("DOM.querySelector", {"nodeId": root_id, "selector": 'input[type="file"]'}, msg_id=12)
                             file_node_id = q_res.get("result", {}).get("nodeId")
                             if file_node_id:
-                                abs_p = str(Path(file_path).resolve())
-                                await cdp_call("DOM.setFileInputFiles", {"files": [abs_p], "nodeId": file_node_id}, msg_id=13)
+                                await cdp_call("DOM.setFileInputFiles", {"files": all_files_to_inject, "nodeId": file_node_id}, msg_id=13)
                                 await asyncio.sleep(0.5)
                     except Exception as e:
-                        print(f"[CDP] Erro ao injetar arquivo: {e}")
+                        print(f"[CDP] Erro ao injetar arquivos: {e}")
 
                 # 2.5 Verificar se há um modal de pergunta interativa aberto no desktop (ask_question)
                 safe_prompt = json.dumps(prompt)

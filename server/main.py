@@ -6,7 +6,7 @@ import socket
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, Set, List
 
 from fastapi import FastAPI, HTTPException, Header, Query, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +27,12 @@ active_websockets: Dict[str, Set[WebSocket]] = {}
 ws_lock = threading.Lock()
 main_loop: Optional[asyncio.AbstractEventLoop] = None
 
+class AttachmentItem(BaseModel):
+    base64: str
+    filename: Optional[str] = None
+    is_image: Optional[bool] = False
+    mime_type: Optional[str] = None
+
 class SendMessageRequest(BaseModel):
     prompt: str = ""
     title: Optional[str] = None
@@ -34,6 +40,9 @@ class SendMessageRequest(BaseModel):
     image_filename: Optional[str] = None
     file_base64: Optional[str] = None
     file_filename: Optional[str] = None
+    attachments: Optional[List[AttachmentItem]] = None
+
+SendMessageRequest.model_rebuild()
 
 class NewConversationRequest(BaseModel):
     prompt: str
@@ -271,44 +280,62 @@ async def delete_conversation(conversation_id: str):
 
 @app.post("/api/conversations/{conversation_id}/messages", dependencies=[Depends(verify_token)])
 async def send_message(conversation_id: str, req: SendMessageRequest):
-    """Envia mensagem para a conversa: via CDP na interface do PC ou fallback para agy.exe, com suporte a imagens, documentos e APKs."""
-    file_path = None
+    """Envia mensagem para a conversa: via CDP na interface do PC ou fallback para agy.exe, com suporte a múltiplos anexos (imagens, documentos, APKs)."""
+    saved_file_paths: List[str] = []
     prompt_to_send = (req.prompt or "").strip()
 
-    # 1. Tratar arquivo genérico anexado (documento, APK, código, zip, etc.)
-    if req.file_base64:
-        try:
-            import base64, time
-            brain_uploads = service.paths.BRAIN_DIR / conversation_id / ".user_uploaded"
-            brain_uploads.mkdir(parents=True, exist_ok=True)
-            fname = req.file_filename or f"file_{int(time.time() * 1000)}"
-            saved_file = brain_uploads / fname
-            saved_file.write_bytes(base64.b64decode(req.file_base64))
-            file_path = str(saved_file.resolve())
-            norm_link = file_path.replace("\\", "/")
-            base_p = prompt_to_send if prompt_to_send else f"Analise o arquivo anexado: {fname}"
-            prompt_to_send = f"{base_p}\n\n[Arquivo anexado: {fname}](file:///{norm_link})"
-        except Exception as e:
-            print(f"Erro ao salvar arquivo anexado: {e}")
+    # Coletar todos os arquivos anexados (seja pela lista `attachments` ou pelos campos legados `file_base64`/`image_base64`)
+    items_to_process: List[AttachmentItem] = []
+    if req.attachments and len(req.attachments) > 0:
+        for att in req.attachments:
+            if att.base64:
+                items_to_process.append(att)
+    else:
+        if req.file_base64:
+            items_to_process.append(AttachmentItem(
+                base64=req.file_base64,
+                filename=req.file_filename,
+                is_image=False
+            ))
+        if req.image_base64:
+            items_to_process.append(AttachmentItem(
+                base64=req.image_base64,
+                filename=req.image_filename,
+                is_image=True
+            ))
 
-    # 2. Tratar imagem anexada
-    elif req.image_base64:
+    if items_to_process:
         try:
             import base64, time
             brain_uploads = service.paths.BRAIN_DIR / conversation_id / ".user_uploaded"
             brain_uploads.mkdir(parents=True, exist_ok=True)
-            ext = ".png"
-            if req.image_filename and "." in req.image_filename:
-                ext = Path(req.image_filename).suffix
-            fname = req.image_filename or f"media_{int(time.time() * 1000)}{ext}"
-            saved_file = brain_uploads / fname
-            saved_file.write_bytes(base64.b64decode(req.image_base64))
-            file_path = str(saved_file.resolve())
-            norm_link = file_path.replace("\\", "/")
-            base_p = prompt_to_send if prompt_to_send else "Analise a imagem anexada."
-            prompt_to_send = f"{base_p}\n\n![Imagem anexada: {fname}](file:///{norm_link})"
+
+            for idx, item in enumerate(items_to_process):
+                try:
+                    ext = ".png" if item.is_image else ""
+                    if item.filename and "." in item.filename:
+                        ext = Path(item.filename).suffix
+                    fname = item.filename or (f"media_{int(time.time() * 1000)}_{idx}{ext}" if item.is_image else f"file_{int(time.time() * 1000)}_{idx}")
+                    saved_file = brain_uploads / fname
+                    saved_file.write_bytes(base64.b64decode(item.base64))
+                    f_path = str(saved_file.resolve())
+                    saved_file_paths.append(f_path)
+                    norm_link = f_path.replace("\\", "/")
+                    actual_name = saved_file.name
+
+                    if item.is_image:
+                        base_p = prompt_to_send if prompt_to_send else "Analise a imagem anexada."
+                        prompt_to_send = f"{base_p}\n\n![Imagem anexada: {actual_name}](file:///{norm_link})"
+                    else:
+                        base_p = prompt_to_send if prompt_to_send else f"Analise o arquivo anexado: {actual_name}"
+                        prompt_to_send = f"{base_p}\n\n[Arquivo anexado: {actual_name}](file:///{norm_link})"
+                except Exception as inner_e:
+                    print(f"[Main] Erro ao salvar arquivo {item.filename}: {inner_e}")
         except Exception as e:
-            print(f"Erro ao salvar imagem anexada: {e}")
+            print(f"[Main] Erro ao processar anexos: {e}")
+
+    prompt_to_send = prompt_to_send.strip()
+    primary_file_path = saved_file_paths[0] if saved_file_paths else None
 
     # 1. Enviar diretamente para a janela do PC via CDP (executa na tela do PC)
     desktop_ready = await cdp_controller.is_desktop_available()
@@ -347,7 +374,12 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
             )
 
     if desktop_ready:
-        success = await cdp_controller.send_message_to_desktop(conversation_id, prompt_to_send, file_path=file_path)
+        success = await cdp_controller.send_message_to_desktop(
+            conversation_id,
+            prompt_to_send,
+            file_path=primary_file_path,
+            file_paths=saved_file_paths
+        )
         if success:
             broadcast_to_conversation(
                 conversation_id,
@@ -362,7 +394,8 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
                 "conversation_id": conversation_id,
                 "channel": "cdp",
                 "desktop_auto_launched": auto_launched,
-                "has_attachment": bool(file_path)
+                "has_attachment": bool(saved_file_paths),
+                "attachments_count": len(saved_file_paths)
             }
 
     # 2. Fallback CLI agy.exe
@@ -387,7 +420,8 @@ async def send_message(conversation_id: str, req: SendMessageRequest):
         "status": "executing_cli",
         "conversation_id": conversation_id,
         "channel": "cli",
-        "has_attachment": bool(file_path)
+        "has_attachment": bool(saved_file_paths),
+        "attachments_count": len(saved_file_paths)
     }
 
 @app.get("/api/projects", dependencies=[Depends(verify_token)])

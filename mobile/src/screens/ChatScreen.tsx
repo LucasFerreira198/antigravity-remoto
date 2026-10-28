@@ -94,9 +94,11 @@ interface QueueItem {
     uri?: string;
     base64?: string;
   };
+  attachments?: SelectedAttachment[];
 }
 
 interface SelectedAttachment {
+  id?: string;
   uri: string;
   name: string;
   size?: number;
@@ -248,8 +250,8 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
     };
   }, [isActive, isSending]);
 
-  // Anexo de Imagem e Arquivos
-  const [selectedAttachment, setSelectedAttachment] = useState<SelectedAttachment | null>(null);
+  // Anexo de Imagens e Arquivos (Múltiplos)
+  const [selectedAttachments, setSelectedAttachments] = useState<SelectedAttachment[]>([]);
   const [showImagePickerModal, setShowImagePickerModal] = useState(false);
 
   // Carregar rascunho salvo ao entrar na conversa
@@ -355,8 +357,23 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const voiceBasePromptRef = useRef<string>('');
   const voiceFinalizedSegmentsRef = useRef<string>('');
+  const shouldIgnoreVoiceResultsRef = useRef<boolean>(false);
+
+  const stopVoiceRecognitionSafely = () => {
+    shouldIgnoreVoiceResultsRef.current = true;
+    voiceBasePromptRef.current = '';
+    voiceFinalizedSegmentsRef.current = '';
+    setIsRecordingVoice(false);
+    try {
+      ExpoSpeechRecognitionModule.stop();
+    } catch (e) {}
+    setTimeout(() => {
+      shouldIgnoreVoiceResultsRef.current = false;
+    }, 800);
+  };
 
   useSpeechRecognitionEvent('start', () => {
+    if (shouldIgnoreVoiceResultsRef.current) return;
     setIsRecordingVoice(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   });
@@ -366,6 +383,7 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
   });
 
   useSpeechRecognitionEvent('result', (event) => {
+    if (shouldIgnoreVoiceResultsRef.current) return;
     // Tomar SEMPRE a hipótese com maior confiança (index 0) para evitar duplicar/triplicar alternativas
     const best = event.results && event.results.length > 0 ? (event.results[0]?.transcript || '').trim() : '';
     if (!best) return;
@@ -410,16 +428,8 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
   const toggleVoiceRecognition = async () => {
     try {
       if (isRecordingVoice) {
-        ExpoSpeechRecognitionModule.stop();
-        setIsRecordingVoice(false);
+        stopVoiceRecognitionSafely();
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        const base = voiceBasePromptRef.current ? `${voiceBasePromptRef.current.trim()} ` : '';
-        const fin = voiceFinalizedSegmentsRef.current.trim();
-        if (fin) {
-          const finalPrompt = `${base}${fin}`.trim();
-          setInputPrompt(finalPrompt);
-          StorageService.saveDraft(conversation.id, finalPrompt);
-        }
         return;
       }
 
@@ -435,6 +445,7 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
         return;
       }
 
+      shouldIgnoreVoiceResultsRef.current = false;
       voiceBasePromptRef.current = inputPrompt;
       voiceFinalizedSegmentsRef.current = '';
       ExpoSpeechRecognitionModule.start({
@@ -773,54 +784,96 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
   const handleSend = async (
     overrideText?: string,
     isQuestionAnswer = false,
-    overrideAttachment?: { name: string; isImage: boolean; uri: string; base64?: string }
+    overrideAttachments?: SelectedAttachment[]
   ) => {
-    const rawAttachment = overrideAttachment || selectedAttachment;
-    const rawText = (overrideText !== undefined ? overrideText : inputPrompt).trim();
-    if (!rawText && !rawAttachment) return;
+    // 0. DESLIGAR IMEDIATAMENTE A VOZ SE ESTIVER GRAVANDO E BLOQUEAR RESULTADOS TARDÍOS
+    if (isRecordingVoice) {
+      stopVoiceRecognitionSafely();
+    } else {
+      shouldIgnoreVoiceResultsRef.current = true;
+      voiceBasePromptRef.current = '';
+      voiceFinalizedSegmentsRef.current = '';
+      setTimeout(() => {
+        shouldIgnoreVoiceResultsRef.current = false;
+      }, 800);
+    }
 
-    // Fallback de texto se enviou apenas anexo
-    const textToSend = rawText || (rawAttachment?.isImage ? 'Analise a imagem anexada.' : `Analise o arquivo anexado: ${rawAttachment?.name}`);
+    const attachmentsToSend = overrideAttachments || selectedAttachments;
+    const rawText = (overrideText !== undefined ? overrideText : inputPrompt).trim();
+    if (!rawText && attachmentsToSend.length === 0) return;
+
+    // Fallback de texto se enviou apenas anexo(s)
+    let textToSend = rawText;
+    if (!textToSend && attachmentsToSend.length > 0) {
+      if (attachmentsToSend.length === 1) {
+        textToSend = attachmentsToSend[0].isImage
+          ? 'Analise a imagem anexada.'
+          : `Analise o arquivo anexado: ${attachmentsToSend[0].name}`;
+      } else {
+        textToSend = `Analise os ${attachmentsToSend.length} arquivos anexados: ${attachmentsToSend.map((a) => a.name).join(', ')}`;
+      }
+    }
 
     // Limpar rascunho salvo ao enviar
     StorageService.clearDraft(conversation.id);
     if (overrideText === undefined) {
       setInputPrompt('');
     }
-
-    const imagePayload = rawAttachment?.isImage && rawAttachment?.base64
-      ? { base64: rawAttachment.base64, filename: rawAttachment.name }
-      : undefined;
-    const filePayload = !rawAttachment?.isImage && rawAttachment?.base64
-      ? { base64: rawAttachment.base64, filename: rawAttachment.name }
-      : undefined;
-    const tempAttachmentUri = rawAttachment?.uri;
-    const attachmentName = rawAttachment?.name;
-    const isImageAttachment = rawAttachment?.isImage;
-    if (!overrideAttachment) {
-      setSelectedAttachment(null);
+    if (!overrideAttachments) {
+      setSelectedAttachments([]);
     }
+
+    const firstImage = attachmentsToSend.find((a) => a.isImage && a.base64);
+    const firstFile = attachmentsToSend.find((a) => !a.isImage && a.base64);
+
+    const imagePayload = firstImage
+      ? { base64: firstImage.base64!, filename: firstImage.name }
+      : undefined;
+    const filePayload = firstFile
+      ? { base64: firstFile.base64!, filename: firstFile.name }
+      : undefined;
+
+    const payloadAttachments = attachmentsToSend
+      .filter((a) => !!a.base64)
+      .map((a) => ({
+        base64: a.base64!,
+        filename: a.name,
+        is_image: !!a.isImage,
+        mime_type: a.mimeType
+      }));
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     // Se o assistente já estiver trabalhando ou enviando (e NÃO for resposta a uma pergunta interativa)
     if ((isActive || isSending) && !isQuestionAnswer) {
       const qId = Date.now().toString();
-      const currentAttachment = rawAttachment ? {
-        name: rawAttachment.name,
-        isImage: rawAttachment.isImage,
-        uri: rawAttachment.uri,
-        base64: rawAttachment.base64,
-      } : undefined;
+      const currentAttachments: SelectedAttachment[] = attachmentsToSend.map((a) => ({
+        id: a.id,
+        name: a.name,
+        isImage: a.isImage,
+        uri: a.uri,
+        base64: a.base64,
+        size: a.size,
+        mimeType: a.mimeType
+      }));
 
       setLocalQueue((prev) => [...prev, {
         id: qId,
         content: textToSend,
         source: 'mobile',
-        attachment: currentAttachment,
+        attachment: currentAttachments[0],
+        attachments: currentAttachments,
       }]);
       setIsSending(true);
       try {
-        await api.sendMessage(conversation.id, textToSend, undefined, imagePayload, filePayload);
+        await api.sendMessage(
+          conversation.id,
+          textToSend,
+          undefined,
+          imagePayload,
+          filePayload,
+          payloadAttachments
+        );
         loadAuxData();
       } catch (e) {
         console.error('Erro ao enviar mensagem para a fila:', e);
@@ -832,13 +885,25 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
 
     // Mensagem otimista imediata na tela (quando o agente está livre)
     const tempIndex = messages.length ? Math.max(...messages.map((m) => m.step_index)) + 1 : 1;
-    const optimisticContent = filePayload ? `${textToSend}\n\n📎 *${attachmentName}*` : textToSend;
+    const attachmentsSummary = attachmentsToSend.length > 0
+      ? attachmentsToSend.map((a) => a.isImage ? `🖼️ *${a.name}*` : `📎 *${a.name}*`).join('\n')
+      : '';
+    const optimisticContent = attachmentsSummary ? `${textToSend}\n\n${attachmentsSummary}` : textToSend;
+
+    const optimisticMedia: MediaItem[] = attachmentsToSend
+      .filter((a) => a.isImage && a.uri)
+      .map((a) => ({
+        mime_type: a.mimeType || 'image/png',
+        filename: a.name || 'upload.png',
+        local_uri: a.uri
+      }));
+
     const optimisticMsg: Message = {
       role: 'user',
       step_index: tempIndex,
       created_at: new Date().toISOString(),
       content: optimisticContent,
-      media: isImageAttachment && tempAttachmentUri ? [{ mime_type: 'image/png', filename: attachmentName || 'upload.png', local_uri: tempAttachmentUri }] : undefined,
+      media: optimisticMedia.length > 0 ? optimisticMedia : undefined,
       type: 'user_message',
     };
     setMessages((prev) => [...prev, optimisticMsg]);
@@ -852,7 +917,14 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
     }, 80);
 
     try {
-      const sendRes = await api.sendMessage(conversation.id, textToSend, undefined, imagePayload, filePayload);
+      const sendRes = await api.sendMessage(
+        conversation.id,
+        textToSend,
+        undefined,
+        imagePayload,
+        filePayload,
+        payloadAttachments
+      );
       if (sendRes && sendRes.desktop_auto_launched) {
         setDesktopStatusNotice({
           text: 'Antigravity aberto no PC e mensagem enviada com sucesso!',
@@ -905,7 +977,7 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
     }
   };
 
-  // Seleção de Imagens e Arquivos
+  // Seleção de Imagens e Arquivos (Suporte a múltiplos arquivos)
   const pickImageFromGallery = async () => {
     setShowImagePickerModal(false);
     try {
@@ -916,21 +988,39 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: true,
         allowsEditing: false,
         quality: 0.8,
         base64: true,
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        const asset = result.assets[0];
-        if (asset.base64) {
-          setSelectedAttachment({
-            uri: asset.uri,
-            name: asset.fileName || `image_${Date.now()}.png`,
-            size: asset.fileSize,
-            mimeType: asset.mimeType || 'image/png',
-            base64: asset.base64,
-            isImage: true,
-          });
+        const added: SelectedAttachment[] = [];
+        for (let i = 0; i < result.assets.length; i++) {
+          const asset = result.assets[i];
+          let b64 = asset.base64;
+          if (!b64 && asset.uri) {
+            try {
+              b64 = await FileSystem.readAsStringAsync(asset.uri, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+            } catch (readErr) {
+              console.warn('Erro ao ler base64 da imagem:', readErr);
+            }
+          }
+          if (b64) {
+            added.push({
+              id: `${Date.now()}_img_${i}_${Math.random().toString(36).substring(2, 6)}`,
+              uri: asset.uri,
+              name: asset.fileName || `image_${Date.now()}_${i + 1}.png`,
+              size: asset.fileSize,
+              mimeType: asset.mimeType || 'image/png',
+              base64: b64,
+              isImage: true,
+            });
+          }
+        }
+        if (added.length > 0) {
+          setSelectedAttachments((prev) => [...prev, ...added]);
           Haptics.selectionAsync();
         }
       }
@@ -954,15 +1044,27 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
-        if (asset.base64) {
-          setSelectedAttachment({
+        let b64 = asset.base64;
+        if (!b64 && asset.uri) {
+          try {
+            b64 = await FileSystem.readAsStringAsync(asset.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+          } catch (readErr) {
+            console.warn('Erro ao ler base64 da câmera:', readErr);
+          }
+        }
+        if (b64) {
+          const newAtt: SelectedAttachment = {
+            id: `${Date.now()}_cam_${Math.random().toString(36).substring(2, 6)}`,
             uri: asset.uri,
             name: `photo_${Date.now()}.jpg`,
             size: asset.fileSize,
             mimeType: 'image/jpeg',
-            base64: asset.base64,
+            base64: b64,
             isImage: true,
-          });
+          };
+          setSelectedAttachments((prev) => [...prev, newAtt]);
           Haptics.selectionAsync();
         }
       }
@@ -977,21 +1079,33 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
       const res = await DocumentPicker.getDocumentAsync({
         type: '*/*',
         copyToCacheDirectory: true,
+        multiple: true,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
-        const asset = res.assets[0];
-        const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        setSelectedAttachment({
-          uri: asset.uri,
-          name: asset.name || `arquivo_${Date.now()}`,
-          size: asset.size,
-          mimeType: asset.mimeType || 'application/octet-stream',
-          base64: base64,
-          isImage: false,
-        });
-        Haptics.selectionAsync();
+        const added: SelectedAttachment[] = [];
+        for (let i = 0; i < res.assets.length; i++) {
+          const asset = res.assets[i];
+          try {
+            const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            added.push({
+              id: `${Date.now()}_doc_${i}_${Math.random().toString(36).substring(2, 6)}`,
+              uri: asset.uri,
+              name: asset.name || `arquivo_${Date.now()}_${i + 1}`,
+              size: asset.size,
+              mimeType: asset.mimeType || 'application/octet-stream',
+              base64: base64,
+              isImage: false,
+            });
+          } catch (readErr) {
+            console.warn('Erro ao ler base64 do documento:', readErr);
+          }
+        }
+        if (added.length > 0) {
+          setSelectedAttachments((prev) => [...prev, ...added]);
+          Haptics.selectionAsync();
+        }
       }
     } catch (e: any) {
       Alert.alert('Erro ao anexar arquivo', e.message);
@@ -1004,21 +1118,33 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
       const res = await DocumentPicker.getDocumentAsync({
         type: ['application/vnd.android.package-archive', '*/*'],
         copyToCacheDirectory: true,
+        multiple: true,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
-        const asset = res.assets[0];
-        const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        setSelectedAttachment({
-          uri: asset.uri,
-          name: asset.name || `app_${Date.now()}.apk`,
-          size: asset.size,
-          mimeType: 'application/vnd.android.package-archive',
-          base64: base64,
-          isImage: false,
-        });
-        Haptics.selectionAsync();
+        const added: SelectedAttachment[] = [];
+        for (let i = 0; i < res.assets.length; i++) {
+          const asset = res.assets[i];
+          try {
+            const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            added.push({
+              id: `${Date.now()}_apk_${i}_${Math.random().toString(36).substring(2, 6)}`,
+              uri: asset.uri,
+              name: asset.name || `app_${Date.now()}_${i + 1}.apk`,
+              size: asset.size,
+              mimeType: 'application/vnd.android.package-archive',
+              base64: base64,
+              isImage: false,
+            });
+          } catch (readErr) {
+            console.warn('Erro ao ler base64 do APK:', readErr);
+          }
+        }
+        if (added.length > 0) {
+          setSelectedAttachments((prev) => [...prev, ...added]);
+          Haptics.selectionAsync();
+        }
       }
     } catch (e: any) {
       Alert.alert('Erro ao anexar APK', e.message);
@@ -1733,32 +1859,63 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
         </TouchableOpacity>
       )}
 
-      {/* Preview de Anexo (Imagem ou Arquivo) */}
-      {selectedAttachment && (
-        <View style={styles.imagePreviewWrap}>
-          {selectedAttachment.isImage ? (
-            <Image source={{ uri: selectedAttachment.uri }} style={styles.imagePreviewThumb} />
-          ) : (
-            <View style={styles.filePreviewIconBox}>
-              <FileText size={24} color="#a855f7" />
-            </View>
-          )}
-          <View style={{ flex: 1, marginLeft: 10 }}>
-            <Text style={styles.imagePreviewTitle} numberOfLines={1}>
-              {selectedAttachment.name}
+      {/* Preview de Múltiplos Anexos (Imagens, Documentos, APKs) */}
+      {selectedAttachments.length > 0 && (
+        <View style={styles.attachmentsContainer}>
+          <View style={styles.attachmentsHeaderRow}>
+            <Text style={styles.attachmentsCountText}>
+              📎 {selectedAttachments.length} {selectedAttachments.length === 1 ? 'arquivo anexado' : 'arquivos anexados'}
             </Text>
-            <Text style={styles.imagePreviewSub}>
-              {selectedAttachment.size
-                ? `${(selectedAttachment.size / 1024).toFixed(0)} KB • Arquivo pronto para envio`
-                : 'Pronto para envio'}
-            </Text>
+            <TouchableOpacity
+              onPress={() => setSelectedAttachments([])}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.attachmentsClearAllText}>Limpar todos</Text>
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={styles.removeImageBtn}
-            onPress={() => setSelectedAttachment(null)}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.attachmentsScrollList}
           >
-            <X size={16} color="#ef4444" />
-          </TouchableOpacity>
+            {selectedAttachments.map((att, idx) => (
+              <View key={att.id || `att_${idx}`} style={styles.attachmentCard}>
+                {att.isImage ? (
+                  <Image source={{ uri: att.uri }} style={styles.attachmentCardThumb} />
+                ) : (
+                  <View style={[styles.attachmentCardIconBox, att.name?.endsWith('.apk') && { backgroundColor: '#064e3b' }]}>
+                    {att.name?.endsWith('.apk') ? (
+                      <Smartphone size={18} color="#22c55e" />
+                    ) : (
+                      <FileText size={18} color="#a855f7" />
+                    )}
+                  </View>
+                )}
+                <View style={styles.attachmentCardInfo}>
+                  <Text style={styles.attachmentCardName} numberOfLines={1}>
+                    {att.name}
+                  </Text>
+                  <Text style={styles.attachmentCardSize}>
+                    {att.size ? `${(att.size / 1024).toFixed(0)} KB` : 'Pronto'}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.attachmentCardRemoveBtn}
+                  onPress={() => setSelectedAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                >
+                  <X size={13} color="#ef4444" />
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity
+              style={styles.attachmentAddMoreBtn}
+              onPress={() => setShowImagePickerModal(true)}
+            >
+              <Plus size={16} color="#38bdf8" />
+              <Text style={styles.attachmentAddMoreText}>Adicionar</Text>
+            </TouchableOpacity>
+          </ScrollView>
         </View>
       )}
 
@@ -1818,33 +1975,32 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
                       {item.source === 'pc' ? 'PC' : 'Celular'}
                     </Text>
                   </View>
-                  {item.attachment && (
-                    <View style={styles.queuedAttachmentPill}>
-                      {item.attachment.isImage ? (
+                  {((item.attachments && item.attachments.length > 0) ? item.attachments : (item.attachment ? [item.attachment as SelectedAttachment] : [])).map((att, attIdx) => (
+                    <View key={attIdx} style={styles.queuedAttachmentPill}>
+                      {att.isImage ? (
                         <ImageIcon size={11} color="#38bdf8" style={{ marginRight: 4 }} />
                       ) : (
                         <FileText size={11} color="#a855f7" style={{ marginRight: 4 }} />
                       )}
                       <Text style={styles.queuedAttachmentText} numberOfLines={1}>
-                        {item.attachment.name}
+                        {att.name}
                       </Text>
                     </View>
-                  )}
+                  ))}
                 </View>
                 <View style={styles.queuedActionRow}>
                   <TouchableOpacity
                     style={[styles.queuedSendBtn, isActive && styles.queuedSendBtnActiveWaiting]}
                     onPress={() => {
-                      handleSend(
-                        item.content,
-                        false,
-                        item.attachment ? {
-                          name: item.attachment.name,
-                          isImage: item.attachment.isImage,
-                          uri: item.attachment.uri || '',
-                          base64: item.attachment.base64
-                        } : undefined
-                      );
+                      const attsToSend = (item.attachments && item.attachments.length > 0)
+                        ? item.attachments
+                        : (item.attachment ? [{
+                            name: item.attachment.name,
+                            isImage: item.attachment.isImage,
+                            uri: item.attachment.uri || '',
+                            base64: item.attachment.base64
+                          }] : undefined);
+                      handleSend(item.content, false, attsToSend);
                       setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
                       setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
                     }}
@@ -1858,13 +2014,15 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
                     style={styles.queuedEditBtn}
                     onPress={() => {
                       setInputPrompt(item.content);
-                      if (item.attachment) {
-                        setSelectedAttachment({
+                      if (item.attachments && item.attachments.length > 0) {
+                        setSelectedAttachments(item.attachments);
+                      } else if (item.attachment) {
+                        setSelectedAttachments([{
                           name: item.attachment.name,
                           isImage: item.attachment.isImage,
                           uri: item.attachment.uri || '',
                           base64: item.attachment.base64
-                        });
+                        }]);
                       }
                       setLocalQueue((prev) => prev.filter((q) => q.id !== item.id));
                       setServerQueue((prev) => prev.filter((q) => q.id !== item.id));
@@ -2071,12 +2229,17 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
 
       {/* Input de Envio Shadcn com Foco Inteligente */}
       <View style={styles.inputContainer}>
-        {/* Botão de Anexo de Foto */}
+        {/* Botão de Anexo de Foto e Arquivos */}
         <TouchableOpacity
           style={styles.attachBtn}
           onPress={() => setShowImagePickerModal(true)}
         >
           <ImageIcon size={20} color="#38bdf8" />
+          {selectedAttachments.length > 0 && (
+            <View style={styles.attachBadge}>
+              <Text style={styles.attachBadgeText}>{selectedAttachments.length}</Text>
+            </View>
+          )}
         </TouchableOpacity>
 
         {/* Botão de Catálogo de Skills */}
@@ -2123,7 +2286,7 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
           maxLength={8000}
         />
 
-        {isActive && !inputPrompt.trim() && !selectedAttachment ? (
+        {isActive && !inputPrompt.trim() && selectedAttachments.length === 0 ? (
           <TouchableOpacity
             style={styles.stopInputBtn}
             onPress={handleStopConversation}
@@ -2138,9 +2301,9 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={[styles.sendBtn, (!inputPrompt.trim() && !selectedAttachment) && styles.sendBtnDisabled]}
+            style={[styles.sendBtn, (!inputPrompt.trim() && selectedAttachments.length === 0) && styles.sendBtnDisabled]}
             onPress={() => handleSend()}
-            disabled={!inputPrompt.trim() && !selectedAttachment}
+            disabled={!inputPrompt.trim() && selectedAttachments.length === 0}
           >
             {isSending ? (
               <ActivityIndicator size="small" color="#ffffff" />
@@ -2173,17 +2336,17 @@ export default function ChatScreen({ conversation: rawConversation, onBack, onOp
 
             <TouchableOpacity style={styles.pickerOption} onPress={pickImageFromGallery}>
               <ImageIcon size={20} color="#34d399" style={{ marginRight: 12 }} />
-              <Text style={styles.pickerOptionText}>Foto da Galeria</Text>
+              <Text style={styles.pickerOptionText}>Fotos da Galeria (Múltipla Seleção)</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.pickerOption} onPress={pickGenericDocument}>
               <FileText size={20} color="#a855f7" style={{ marginRight: 12 }} />
-              <Text style={styles.pickerOptionText}>Documento ou Código (PDF, TXT, MD, etc.)</Text>
+              <Text style={styles.pickerOptionText}>Documentos ou Código (Múltipla Seleção)</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.pickerOption} onPress={pickApkFile}>
               <Smartphone size={20} color="#f59e0b" style={{ marginRight: 12 }} />
-              <Text style={styles.pickerOptionText}>Aplicativo Android (.APK)</Text>
+              <Text style={styles.pickerOptionText}>Aplicativos Android (.APK - Múltiplos)</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -2859,6 +3022,116 @@ const styles = StyleSheet.create({
     color: '#a7f3d0',
     fontSize: 12,
     fontWeight: '500',
+  },
+  attachmentsContainer: {
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+    borderRadius: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
+    marginHorizontal: 12,
+    marginBottom: 6,
+  },
+  attachmentsHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    marginBottom: 6,
+  },
+  attachmentsCountText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  attachmentsClearAllText: {
+    color: '#ef4444',
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  attachmentsScrollList: {
+    paddingHorizontal: 10,
+    gap: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  attachmentCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#27272a',
+    borderWidth: 1,
+    borderColor: '#3f3f46',
+    borderRadius: 8,
+    padding: 6,
+    maxWidth: 200,
+  },
+  attachmentCardThumb: {
+    width: 36,
+    height: 36,
+    borderRadius: 6,
+  },
+  attachmentCardIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 6,
+    backgroundColor: '#1e1b4b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  attachmentCardInfo: {
+    marginLeft: 8,
+    marginRight: 6,
+    flexShrink: 1,
+  },
+  attachmentCardName: {
+    color: '#fafafa',
+    fontSize: 12,
+    fontWeight: '600',
+    maxWidth: 110,
+  },
+  attachmentCardSize: {
+    color: '#94a3b8',
+    fontSize: 10,
+  },
+  attachmentCardRemoveBtn: {
+    padding: 4,
+    borderRadius: 12,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+  },
+  attachmentAddMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#38bdf8',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 4,
+  },
+  attachmentAddMoreText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  attachBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    backgroundColor: '#38bdf8',
+    borderRadius: 9,
+    minWidth: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+  },
+  attachBadgeText: {
+    color: '#09090b',
+    fontSize: 10,
+    fontWeight: '800',
   },
   imagePreviewWrap: {
     flexDirection: 'row',

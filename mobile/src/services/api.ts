@@ -199,8 +199,18 @@ class ApiService {
     prompt: string,
     title?: string,
     image?: { base64: string; filename: string },
-    file?: { base64: string; filename: string }
+    file?: { base64: string; filename: string },
+    attachments?: Array<{ base64: string; filename: string; is_image?: boolean; mime_type?: string }>
   ): Promise<any> {
+    const payloadAttachments = attachments && attachments.length > 0
+      ? attachments.map((a) => ({
+          base64: a.base64,
+          filename: a.filename,
+          is_image: !!a.is_image,
+          mime_type: a.mime_type
+        }))
+      : undefined;
+
     return this.request(`/api/conversations/${encodeURIComponent(id)}/messages`, {
       method: 'POST',
       body: JSON.stringify({
@@ -209,7 +219,8 @@ class ApiService {
         image_base64: image?.base64,
         image_filename: image?.filename,
         file_base64: file?.base64,
-        file_filename: file?.filename
+        file_filename: file?.filename,
+        attachments: payloadAttachments
       })
     });
   }

@@ -179,3 +179,38 @@ def test_12_desktop_launch_endpoint():
     data = res.json()
     assert data["status"] in ("already_running", "launched")
     assert "message" in data
+
+def test_13_attach_multiple_files_batch():
+    """Testa anexar múltiplos arquivos simultâneos (imagens + documentos + APK) no payload attachments."""
+    tiny_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    dummy_doc_b64 = base64.b64encode(b"multi file document content").decode("utf-8")
+    target_cid = "b14ec5fe-c49d-4125-9b6a-cb61543c64c0"
+
+    payload = {
+        "prompt": "Teste de múltiplos arquivos",
+        "attachments": [
+            {
+                "base64": tiny_png_b64,
+                "filename": "multi_img_1.png",
+                "is_image": True,
+                "mime_type": "image/png"
+            },
+            {
+                "base64": dummy_doc_b64,
+                "filename": "multi_doc_2.txt",
+                "is_image": False,
+                "mime_type": "text/plain"
+            }
+        ]
+    }
+    res = client.post(f"/api/conversations/{target_cid}/messages", headers=auth_headers, json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["has_attachment"] is True
+    assert data.get("attachments_count") == 2
+
+    service = AntigravityService()
+    upload_dir = service.paths.BRAIN_DIR / target_cid / ".user_uploaded"
+    assert upload_dir.exists()
+    assert (upload_dir / "multi_img_1.png").exists()
+    assert (upload_dir / "multi_doc_2.txt").exists()
